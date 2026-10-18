@@ -1,29 +1,18 @@
 # Image Voice Mover
 
-**Voice + Drag-Drop image sorter for Windows 10**
+**Fast image sorter for Windows 10**  
+Ctrl+Click multi-select + Drag & Drop to folders
 
-Sort photos fast using voice commands or by dragging images into folders.
+## Latest Changes
 
-## What's New (Latest Update)
-
-- ✅ **Much better voice recognition** (handles Indian accent better, clearer feedback)
-- ✅ **Folder side panel** – see all folders next to the 12 images
-- ✅ **Drag & Drop** images directly onto any folder
-- ✅ Press **`N`** after moving images to refill the empty slots with next photos
-- ✅ Create new folders from the panel
-
-## Features
-
-| Feature | Description |
-|---------|-------------|
-| Drive + Folder select | Start by choosing drive then folder |
-| Fullscreen 3×4 grid | Clean grid, no borders/cards |
-| Colorful number badges | Top-right circle on every image |
-| Voice (`M` key) | Speak: `take 1 5 7 and move to Family` |
-| Side Folder Panel | All sub-folders visible |
-| Drag & Drop | Drag any image onto a folder |
-| Refill (`N` key) | After moves, press N to fill empty slots |
-| New Folder button | Create folders on the fly |
+- ✅ **3 columns × 5 rows** = 15 images per page
+- ✅ **Full grid** – zero space, zero borders between photos
+- ✅ **Ctrl + Click** multi-select
+- ✅ Selected images turn **Black & White + blue highlight** (real-time)
+- ✅ **Drag any selected image** onto a folder → all selected images move
+- ✅ Clicking a folder name also moves the selected images
+- ✅ Mic / voice system completely removed
+- ✅ Drag & drop fixed and reliable
 
 ## How to Run
 
@@ -32,37 +21,35 @@ pip install -r requirements.txt
 python main.py
 ```
 
-> If PyAudio fails on Windows, download the correct `.whl` from  
-> https://www.lfd.uci.edu/~gohlke/pythonlibs/#pyaudio  and install it.
+Only need **Pillow** now (no speech packages).
 
 ## Controls
 
-| Key / Action | What it does |
-|--------------|--------------|
-| **M** | Start microphone (speak command) |
-| **N** | Refill the 12-image grid after you have moved some |
-| **← / →** | Previous / Next page |
+| Action | Result |
+|--------|--------|
+| **Normal Click** | Select only that image |
+| **Ctrl + Click** | Add / remove from selection |
+| **Drag selected image** → Folder | Move all selected images |
+| **Click folder name** | Also moves currently selected images |
+| **N** | Refill the grid with remaining images |
+| **← / →** | Change page |
 | **Esc** | Exit fullscreen |
-| **Drag image** | Drop onto any folder in the right panel |
+| **+ New Folder** | Create folder in the side panel |
 
-## Voice Examples (speak clearly)
+## Selection Highlight
 
-```
-take 1 3 5 and move to Family
-take 2, 4, 7 move to Vacation
-move 1 6 9 to Work
-take one five eight and move to Photos
-```
+- Selected photos become **Black & White**
+- Blue border + light blue tint appears
+- Highlight stays only until you move them
 
-After the move you will see the remaining images.  
-Press **N** only when you have finished checking the current 12 images and want the empty places filled with the next photos.
+## Workflow
 
-## Tips for better voice recognition
-
-1. Speak a little slowly and clearly
-2. Keep microphone close
-3. Reduce background noise
-4. Internet is required (Google Speech API)
+1. Select Drive → Select Folder
+2. Fullscreen opens with 15 photos (3×5)
+3. **Ctrl + Click** the photos you want
+4. Drag any of them to a folder on the right (or just click the folder)
+5. Photos move instantly
+6. Press **N** when you want the empty places filled with next images
 
 ---
-Made for quick photo sorting.
+Made for quick bulk photo sorting.
