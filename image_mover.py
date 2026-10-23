@@ -278,7 +278,7 @@ class ImageVoiceMover:
             self.grid_frame.grid_rowconfigure(row, weight=1, minsize=0)
             self.grid_frame.grid_columnconfigure(col, weight=1, minsize=0)
 
-if idx < len(page_imgs):
+            if idx < len(page_imgs):
                 path = page_imgs[idx]
                 self._place_image(cell, path, number, cell_w, cell_h)
             else:
