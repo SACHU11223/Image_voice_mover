@@ -1,1 +1,3 @@
 Pillow>=10.0.0
+mutagen>=1.47.0
+pyacoustid>=1.3.0
