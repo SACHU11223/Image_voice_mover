@@ -17,7 +17,7 @@ A menu will open with **two big options**:
 | Icon | Project | What it does |
 |------|---------|--------------|
 | 📷 | **Image Sorter** | Fast bulk photo sorting with Ctrl+Click + Drag & Drop |
-| 🎵 | **Media Classifier** | Auto sort Audio + Video into Bhakti / Old / New folders |
+| 🎵 | **Media Classifier** | Auto sort + **rename** Audio/Video into Bhakti / Old / New folders |
 
 ---
 
@@ -61,8 +61,8 @@ Ctrl+Click multi-select + Drag & Drop to folders
 
 ## 🎵 Project 2: Media Classifier (Audio + Video Sorter)
 
-**Automatic sorter for songs & videos**  
-Creates 6 + 1 folders and moves files correctly.
+**Automatic sorter + renamer for songs & videos**  
+Creates 6 + 1 folders, optionally renames files from online lookup, then moves them.
 
 ### Target Folders Created
 ```
@@ -77,21 +77,14 @@ Video/
 Unsorted/          ← if year unknown
 ```
 
-### Sorting Logic (3 Steps)
+### What it does (step by step)
 
-1. **Metadata & Fingerprinting**
-   - `mutagen` → reads local ID3 tags (title, year)
-   - `pyacoustid` → (optional) online free database match for unknown files
-
-2. **Bhakti / Devotional Check**
-   - Keywords in title/filename/metadata:
-     `bhajan, bhakti, shiv, ram, krishna, hanuman, chalisa, aarti, mantra, kirtan...`
-   - If found → goes to **Bhakti** folder
-
-3. **Year-based Sorting**
-   - Year ≤ 1999 → **Old_Song_Till_1999**
-   - Year 2000–2026 → **New_Song_2000_2026**
-   - Year unknown → **Unsorted**
+1. **Local tags** (`mutagen`) → read Title / Artist / Year
+2. **Online lookup** (`pyacoustid`) → optional fingerprint match (audio only)
+3. **Auto-rename** → if good Title/Artist found → rename to `Artist - Title.ext`
+4. **Bhakti check** → keywords like bhajan, shiv, ram, krishna, hanuman, chalisa...
+5. **Year sort** → ≤1999 = Old, 2000-2026 = New
+6. **Move** to correct folder
 
 ### Supported Formats
 - **Audio**: `.mp3` `.wav` `.flac` `.m4a` `.ogg` `.aac`
@@ -99,21 +92,25 @@ Unsorted/          ← if year unknown
 
 ### How to Use Media Classifier
 1. Open the app → click **Media Classifier**
-2. Select **Source folder** (where your mixed songs/videos are)
+2. Select **Source folder**
 3. (Optional) Select different Destination
-4. Tick “Use online fingerprint” if you want better name detection
-5. Click **START CLASSIFY & MOVE**
-6. Watch the log → files move automatically
+4. **Tick the checkbox** “Use online fingerprint (pyacoustid) + auto-rename”
+5. Click **START CLASSIFY + RENAME + MOVE**
+6. Watch the log – it shows old name → new name → folder
 
-### Install Extra Libraries (only for Media Classifier)
+### Important Notes
+- Online lookup is **optional**. If checkbox is off or internet/fpcalc fails → still sorts using local tags + filename.
+- Rename only happens when good Title (or Artist + Title) is found.
+- Video files mainly use filename + local tags (pyacoustid works best on audio).
+
+### Install Extra Libraries
 ```bash
 pip install mutagen pyacoustid
 ```
 
-> **Note about pyacoustid**:  
-> It needs `fpcalc` (Chromaprint) for fingerprinting.  
-> On Windows you can download it from: https://acoustid.org/chromaprint  
-> Or just skip the checkbox – mutagen + filename is enough for most cases.
+> **fpcalc note (for pyacoustid):**  
+> Download Chromaprint from https://acoustid.org/chromaprint and put `fpcalc.exe` in PATH.  
+> Or just uncheck the box – local mode still works fine.
 
 ---
 
@@ -122,7 +119,7 @@ pip install mutagen pyacoustid
 ```
 Pillow>=10.0.0      # Image Sorter
 mutagen>=1.47.0     # Media Classifier (tags)
-pyacoustid>=1.3.0   # Media Classifier (optional online match)
+pyacoustid>=1.3.0   # Media Classifier (optional online match + rename)
 ```
 
 All free & lightweight. No heavy AI models. Runs fine on 4GB RAM.
@@ -134,7 +131,7 @@ All free & lightweight. No heavy AI models. Runs fine on 4GB RAM.
 Image_voice_mover/
 ├── main.py                 ← Root menu (start here)
 ├── image_mover.py          ← Image Sorter code
-├── media_classifier.py     ← Audio/Video Classifier code
+├── media_classifier.py     ← Audio/Video Classifier + Renamer
 ├── requirements.txt
 └── README.md
 ```
