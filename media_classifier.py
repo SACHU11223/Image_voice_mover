@@ -1,10 +1,10 @@
 """
-Media Classifier - Audio & Video Sorter
-Lightweight (works on 4GB RAM)
-
-- Optional online lookup with pyacoustid
-- Auto-rename files when good title/artist found
-- Then move to correct folder
+Media Classifier - Safe & Lightweight Version
+=============================================
+- NO extra software needed (no fpcalc, no chromaprint)
+- Only uses mutagen (optional) + filename
+- Dry Run mode by default (safe)
+- Strict rules so random files are NOT moved
 """
 
 import os
@@ -14,40 +14,32 @@ from pathlib import Path
 import tkinter as tk
 from tkinter import filedialog, messagebox, scrolledtext, ttk
 
-# Optional libraries
+# Optional - pure Python
 try:
     from mutagen import File as MutagenFile
     HAS_MUTAGEN = True
 except ImportError:
     HAS_MUTAGEN = False
 
-try:
-    import acoustid
-    HAS_ACOUSTID = True
-except ImportError:
-    HAS_ACOUSTID = False
-
 # ================== CONFIG ==================
 AUDIO_EXTS = {".mp3", ".wav", ".flac", ".m4a", ".ogg", ".aac"}
 VIDEO_EXTS = {".mp4", ".mkv", ".avi", ".mov", ".webm", ".wmv"}
 
+# Strong Bhakti keywords only (to avoid random matches)
 BHAKTI_KEYWORDS = [
-    "bhajan", "bhakti", "shiv", "shiva", "ram", "rama", "krishna", "krishan",
-    "hanuman", "chalisa", "aarti", "arti", "devotional", "bhagwan", "ganesh",
-    "ganesha", "durga", "maa", "mata", "om", "mantra", "stotra", "kirtan",
-    "sai", "baba", "vishnu", "lakshmi", "saraswati", "radhe", "radha",
-    "mahabharat", "ramayan", "geeta", "gita", "bhakti sangeet", "devi"
+    "bhajan", "bhakti", "chalisa", "aarti", "arti", "kirtan",
+    "hanuman", "shiv", "shiva", "ram bhajan", "krishna bhajan",
+    "radhe", "radha", "sai baba", "devotional", "bhagwan",
+    "ganesh aarti", "durga aarti", "om namah", "mantra",
+    "ramayan", "mahabharat", "geeta", "gita"
 ]
-
-# Free public AcoustID key (limited). Better: get your own free key at https://acoustid.org
-ACOUSTID_API_KEY = "8XaBELgH"
 
 BG = "#0a0a0e"
 PANEL = "#12121a"
 ACCENT = "#00d4ff"
 GREEN = "#2ed573"
-RED = "#ff4757"
 ORANGE = "#ffa502"
+RED = "#ff4757"
 
 
 class MediaClassifierApp:
@@ -59,14 +51,13 @@ class MediaClassifierApp:
             self.root = parent
             self.own_root = False
 
-        self.root.title("Media Classifier - Audio & Video Sorter")
+        self.root.title("Media Classifier - Safe Mode")
         self.root.configure(bg=BG)
-        self.root.geometry("920x680")
+        self.root.geometry("920x700")
         self.root.minsize(700, 520)
 
         self.source_path = None
         self.dest_path = None
-        self.log_text = None
 
         self._build_ui()
         if self.own_root:
@@ -77,33 +68,32 @@ class MediaClassifierApp:
             w.destroy()
 
         # Header
-        header = tk.Frame(self.root, bg=PANEL, height=60)
+        header = tk.Frame(self.root, bg=PANEL, height=58)
         header.pack(fill="x")
         header.pack_propagate(False)
 
-        tk.Label(header, text="🎵  Media Classifier  (Audio + Video Sorter)",
-                 font=("Segoe UI", 18, "bold"), fg="white", bg=PANEL).pack(side="left", padx=20, pady=12)
+        tk.Label(header, text="🎵  Media Classifier  (Safe Mode)",
+                 font=("Segoe UI", 17, "bold"), fg="white", bg=PANEL).pack(side="left", padx=18, pady=12)
 
         if not self.own_root:
             tk.Button(header, text="← Menu", font=("Segoe UI", 10),
                       bg="#333", fg="white", relief="flat", padx=12,
-                      command=self._go_back).pack(side="right", padx=15, pady=12)
+                      command=self._go_back).pack(side="right", padx=14, pady=12)
 
-        # Main content
         main = tk.Frame(self.root, bg=BG)
-        main.pack(expand=True, fill="both", padx=25, pady=12)
+        main.pack(expand=True, fill="both", padx=22, pady=10)
 
         # Info
-        info = tk.Label(main,
-                        text="Scans folder → Optional online lookup (pyacoustid) → Rename file → Move to Bhakti / Old / New",
-                        font=("Segoe UI", 11), fg="#aaaaaa", bg=BG, wraplength=820)
-        info.pack(pady=(0, 12))
+        tk.Label(main,
+                 text="No extra software needed. Uses only filename + optional mutagen tags.\n"
+                      "Dry Run ON = sirf dikhayega kya hoga (safe). Dry Run OFF = actually move karega.",
+                 font=("Segoe UI", 10), fg="#aaaaaa", bg=BG, justify="left").pack(anchor="w", pady=(0, 10))
 
-        # Source folder
+        # Source
         src_frame = tk.Frame(main, bg=BG)
-        src_frame.pack(fill="x", pady=5)
+        src_frame.pack(fill="x", pady=4)
         tk.Label(src_frame, text="Source Folder:", font=("Segoe UI", 11, "bold"),
-                 fg="#ccc", bg=BG, width=14, anchor="w").pack(side="left")
+                 fg="#ccc", bg=BG, width=13, anchor="w").pack(side="left")
         self.src_var = tk.StringVar(value="Not selected")
         tk.Label(src_frame, textvariable=self.src_var, font=("Segoe UI", 10),
                  fg=ACCENT, bg=BG, anchor="w").pack(side="left", fill="x", expand=True)
@@ -111,12 +101,12 @@ class MediaClassifierApp:
                   bg=ACCENT, fg="black", relief="flat", padx=12,
                   command=self._select_source).pack(side="right")
 
-        # Dest folder
+        # Dest
         dst_frame = tk.Frame(main, bg=BG)
-        dst_frame.pack(fill="x", pady=5)
+        dst_frame.pack(fill="x", pady=4)
         tk.Label(dst_frame, text="Destination:", font=("Segoe UI", 11, "bold"),
-                 fg="#ccc", bg=BG, width=14, anchor="w").pack(side="left")
-        self.dst_var = tk.StringVar(value="Same as Source (subfolders will be created)")
+                 fg="#ccc", bg=BG, width=13, anchor="w").pack(side="left")
+        self.dst_var = tk.StringVar(value="Same as Source")
         tk.Label(dst_frame, textvariable=self.dst_var, font=("Segoe UI", 10),
                  fg="#888", bg=BG, anchor="w").pack(side="left", fill="x", expand=True)
         tk.Button(dst_frame, text="Browse", font=("Segoe UI", 10),
@@ -124,46 +114,58 @@ class MediaClassifierApp:
                   command=self._select_dest).pack(side="right")
 
         # Options
-        opt_frame = tk.Frame(main, bg=BG)
-        opt_frame.pack(fill="x", pady=8)
+        opt = tk.Frame(main, bg=BG)
+        opt.pack(fill="x", pady=10)
 
-        self.use_acoustid = tk.BooleanVar(value=HAS_ACOUSTID)
-        tk.Checkbutton(opt_frame, text="Use online fingerprint (pyacoustid) + auto-rename",
-                       variable=self.use_acoustid, font=("Segoe UI", 10),
-                       fg="#ccc", bg=BG, selectcolor="#222", activebackground=BG,
-                       activeforeground="white").pack(side="left")
+        self.dry_run = tk.BooleanVar(value=True)   # DEFAULT SAFE
+        tk.Checkbutton(opt, text="Dry Run (recommended) - sirf dikhayega, move nahi karega",
+                       variable=self.dry_run, font=("Segoe UI", 10, "bold"),
+                       fg=ORANGE, bg=BG, selectcolor="#222",
+                       activebackground=BG, activeforeground=ORANGE).pack(anchor="w")
 
-        # Status of libs
-        lib_status = []
-        lib_status.append("mutagen ✅" if HAS_MUTAGEN else "mutagen ❌")
-        lib_status.append("pyacoustid ✅" if HAS_ACOUSTID else "pyacoustid ❌")
-        tk.Label(opt_frame, text="  |  Libs: " + "  ".join(lib_status),
-                 font=("Segoe UI", 9), fg="#666", bg=BG).pack(side="left", padx=10)
+        self.only_bhakti = tk.BooleanVar(value=False)
+        tk.Checkbutton(opt, text="Only sort bas Bhakti files (baaki chhod do)",
+                       variable=self.only_bhakti, font=("Segoe UI", 10),
+                       fg="#ccc", bg=BG, selectcolor="#222",
+                       activebackground=BG, activeforeground="white").pack(anchor="w", pady=2)
 
-        # Run button
-        self.run_btn = tk.Button(main, text="▶  START CLASSIFY + RENAME + MOVE",
-                                 font=("Segoe UI", 13, "bold"),
+        self.rename_files = tk.BooleanVar(value=False)
+        tk.Checkbutton(opt, text="Rename files if good Title found in tags",
+                       variable=self.rename_files, font=("Segoe UI", 10),
+                       fg="#ccc", bg=BG, selectcolor="#222",
+                       activebackground=BG, activeforeground="white").pack(anchor="w")
+
+        # Lib status
+        status = "mutagen ✅" if HAS_MUTAGEN else "mutagen ❌ (pip install mutagen)"
+        tk.Label(opt, text=f"Library: {status}", font=("Segoe UI", 9),
+                 fg="#666", bg=BG).pack(anchor="w", pady=4)
+
+        # Buttons
+        btn_frame = tk.Frame(main, bg=BG)
+        btn_frame.pack(pady=8)
+
+        self.run_btn = tk.Button(btn_frame, text="▶  START (Dry Run)",
+                                 font=("Segoe UI", 12, "bold"),
                                  bg=GREEN, fg="black", relief="flat",
-                                 padx=30, pady=10, command=self._run)
-        self.run_btn.pack(pady=10)
+                                 padx=28, pady=9, command=self._run)
+        self.run_btn.pack(side="left", padx=6)
 
         # Progress
         self.progress = ttk.Progressbar(main, mode="determinate", length=720)
         self.progress.pack(pady=4)
 
-        # Log area
+        # Log
         tk.Label(main, text="Log:", font=("Segoe UI", 10, "bold"), fg="#ccc", bg=BG).pack(anchor="w")
-        self.log_text = scrolledtext.ScrolledText(main, height=15, font=("Consolas", 9),
+        self.log_text = scrolledtext.ScrolledText(main, height=14, font=("Consolas", 9),
                                                   bg="#111118", fg="#dddddd",
                                                   insertbackground="white", relief="flat")
-        self.log_text.pack(fill="both", expand=True, pady=5)
+        self.log_text.pack(fill="both", expand=True, pady=4)
 
-        self._log("Ready. Select Source folder and click START.")
-        self._log("• Online lookup is OPTIONAL (checkbox). If it fails → still sorts with local tags/filename.")
+        self._log("Ready.")
+        self._log("• Dry Run ON = safe (sirf dikhayega)")
+        self._log("• Dry Run OFF = actually folders bana ke files move karega")
         if not HAS_MUTAGEN:
-            self._log("⚠ Install mutagen:  pip install mutagen")
-        if not HAS_ACOUSTID:
-            self._log("⚠ Install pyacoustid:  pip install pyacoustid   (needs fpcalc for fingerprint)")
+            self._log("⚠ Better results ke liye:  pip install mutagen")
 
     def _go_back(self):
         for w in self.root.winfo_children():
@@ -172,12 +174,12 @@ class MediaClassifierApp:
         show_main_menu(self.root)
 
     def _select_source(self):
-        path = filedialog.askdirectory(title="Select Source Folder (contains audio/video)")
+        path = filedialog.askdirectory(title="Select Source Folder")
         if path:
             self.source_path = path
             self.src_var.set(path)
             if not self.dest_path:
-                self.dst_var.set(path + "  (subfolders will be created here)")
+                self.dst_var.set(path + "  (subfolders yahin banenge)")
 
     def _select_dest(self):
         path = filedialog.askdirectory(title="Select Destination Folder")
@@ -192,31 +194,34 @@ class MediaClassifierApp:
 
     def _run(self):
         if not self.source_path:
-            messagebox.showwarning("Missing", "Please select Source folder first.")
+            messagebox.showwarning("Missing", "Pehle Source folder select karo.")
             return
 
         dest_root = self.dest_path or self.source_path
+        is_dry = self.dry_run.get()
+
         self.run_btn.config(state="disabled", text="Working...")
         self.progress["value"] = 0
-        self._log("\n" + "=" * 55)
-        self._log(f"Source : {self.source_path}")
-        self._log(f"Dest   : {dest_root}")
-        self._log(f"Online : {'ON' if self.use_acoustid.get() else 'OFF'}")
-        self._log("=" * 55)
+
+        self._log("\n" + "="*55)
+        self._log(f"Mode     : {'DRY RUN (safe)' if is_dry else 'REAL MOVE'}")
+        self._log(f"Source   : {self.source_path}")
+        self._log(f"Dest     : {dest_root}")
+        self._log("="*55)
 
         try:
-            self._classify_and_move(self.source_path, dest_root)
+            self._process(self.source_path, dest_root, is_dry)
         except Exception as e:
             self._log(f"❌ Error: {e}")
             messagebox.showerror("Error", str(e))
         finally:
-            self.run_btn.config(state="normal", text="▶  START CLASSIFY + RENAME + MOVE")
+            self.run_btn.config(state="normal",
+                                text="▶  START (Dry Run)" if self.dry_run.get() else "▶  START REAL MOVE")
 
-    def _classify_and_move(self, source, dest_root):
+    def _process(self, source, dest_root, is_dry):
         source = Path(source)
         dest_root = Path(dest_root)
 
-        # Create target folders
         folders = {
             "audio_bhakti": dest_root / "Audio" / "Bhakti",
             "audio_new":    dest_root / "Audio" / "New_Song_2000_2026",
@@ -226,41 +231,50 @@ class MediaClassifierApp:
             "video_old":    dest_root / "Video" / "Old_Song_Till_1999",
             "unsorted":     dest_root / "Unsorted",
         }
-        for p in folders.values():
-            p.mkdir(parents=True, exist_ok=True)
 
-        # Collect files (skip already sorted folders)
+        if not is_dry:
+            for p in folders.values():
+                p.mkdir(parents=True, exist_ok=True)
+
+        # Collect files
         files = []
         for f in source.rglob("*"):
             if f.is_file() and f.suffix.lower() in (AUDIO_EXTS | VIDEO_EXTS):
+                # skip already inside target folders
                 if any(str(f).startswith(str(p)) for p in folders.values()):
                     continue
                 files.append(f)
 
         total = len(files)
         if total == 0:
-            self._log("No audio/video files found.")
+            self._log("Koi audio/video file nahi mili.")
             return
 
-        self._log(f"Found {total} media files. Starting...\n")
+        self._log(f"Found {total} files\n")
         self.progress["maximum"] = total
 
         stats = {k: 0 for k in folders}
-        moved = 0
-        renamed = 0
+        will_move = 0
+        skipped = 0
 
         for i, fpath in enumerate(files, 1):
             self.progress["value"] = i
             try:
-                category, new_name = self._get_info_and_name(fpath)
-                target_dir = folders[category]
+                category, new_name, reason = self._decide(fpath)
 
-                # Final destination name
-                final_name = new_name if new_name else fpath.name
+                if category is None:
+                    # Not confident → skip
+                    skipped += 1
+                    self._log(f"[{i}/{total}] SKIP  {fpath.name}")
+                    self._log(f"         reason: {reason}")
+                    continue
+
+                target_dir = folders[category]
+                final_name = new_name if (new_name and self.rename_files.get()) else fpath.name
                 dest_file = target_dir / final_name
 
-                # Avoid overwrite
-                if dest_file.exists() or (dest_file == fpath):
+                # unique name
+                if not is_dry and dest_file.exists():
                     stem = Path(final_name).stem
                     suffix = Path(final_name).suffix
                     c = 1
@@ -268,51 +282,63 @@ class MediaClassifierApp:
                         dest_file = target_dir / f"{stem}_{c}{suffix}"
                         c += 1
 
-                # Move (and rename in one step)
-                shutil.move(str(fpath), str(dest_file))
                 stats[category] += 1
-                moved += 1
+                will_move += 1
 
-                if new_name and new_name != fpath.name:
-                    renamed += 1
-                    self._log(f"[{i}/{total}] {fpath.name}")
-                    self._log(f"         → renamed: {final_name}")
-                    self._log(f"         → {category}")
-                else:
-                    self._log(f"[{i}/{total}] {fpath.name}  →  {category}")
+                action = "WOULD MOVE" if is_dry else "MOVED"
+                self._log(f"[{i}/{total}] {action}  {fpath.name}")
+                if new_name and self.rename_files.get() and new_name != fpath.name:
+                    self._log(f"         → rename : {final_name}")
+                self._log(f"         → folder : {category}")
+                self._log(f"         → reason : {reason}")
+
+                if not is_dry:
+                    shutil.move(str(fpath), str(dest_file))
 
             except Exception as e:
                 self._log(f"[{i}/{total}] FAIL {fpath.name}: {e}")
-                stats["unsorted"] += 1
 
-        self._log("\n" + "=" * 45)
-        self._log(f"✅ Done! Moved {moved} files  |  Renamed {renamed} files")
+        self._log("\n" + "="*50)
+        if is_dry:
+            self._log(f"DRY RUN complete")
+            self._log(f"Would move : {will_move} files")
+            self._log(f"Skipped    : {skipped} files (not confident)")
+            self._log("\nAgar sahi lag raha hai to Dry Run OFF karke phir se chalao.")
+        else:
+            self._log(f"REAL MOVE complete")
+            self._log(f"Moved   : {will_move} files")
+            self._log(f"Skipped : {skipped} files")
+
         for k, v in stats.items():
             if v:
                 self._log(f"   {k}: {v}")
-        self._log("=" * 45)
-        messagebox.showinfo("Finished", f"Moved {moved} files\nRenamed {renamed} files")
+        self._log("="*50)
 
-    def _get_info_and_name(self, fpath: Path):
+        if is_dry:
+            messagebox.showinfo("Dry Run Done",
+                                f"Would move {will_move} files\nSkipped {skipped} files\n\n"
+                                "Check log. Agar theek hai to Dry Run OFF karke dubara chalao.")
+        else:
+            messagebox.showinfo("Done", f"Moved {will_move} files\nSkipped {skipped} files")
+
+    def _decide(self, fpath: Path):
         """
-        Returns (category, new_filename or None)
-        category = audio_bhakti / audio_new / audio_old / video_... / unsorted
+        Returns (category or None, new_name or None, reason)
+        category = None means SKIP (not confident)
         """
         is_audio = fpath.suffix.lower() in AUDIO_EXTS
         prefix = "audio_" if is_audio else "video_"
-        ext = fpath.suffix.lower()
+        name_lower = fpath.stem.lower()
 
-        # Data we collect
         title = ""
         artist = ""
         year = None
-        source_of_name = "filename"
 
-        # ---------- 1. Local metadata (mutagen) ----------
+        # ---- 1. Local tags (mutagen) ----
         if HAS_MUTAGEN:
             try:
                 meta = MutagenFile(fpath, easy=True)
-                if meta is not None:
+                if meta:
                     if "title" in meta and meta["title"]:
                         title = str(meta["title"][0]).strip()
                     if "artist" in meta and meta["artist"]:
@@ -321,106 +347,58 @@ class MediaClassifierApp:
                         year = self._extract_year(str(meta["date"][0]))
                     elif "year" in meta and meta["year"]:
                         year = self._extract_year(str(meta["year"][0]))
-                    if title:
-                        source_of_name = "mutagen"
             except Exception:
                 pass
 
-        # ---------- 2. Online fingerprint (pyacoustid) - AUDIO ONLY ----------
-        online_title = ""
-        online_artist = ""
-        if is_audio and self.use_acoustid.get() and HAS_ACOUSTID:
-            try:
-                # acoustid.match returns generator of (score, recording_id, title, artist)
-                results = list(acoustid.match(ACOUSTID_API_KEY, str(fpath), parse=False))
-                for score, rid, t, a in results:
-                    if score and score > 0.4:          # decent confidence
-                        if t:
-                            online_title = str(t).strip()
-                        if a:
-                            online_artist = str(a).strip()
-                        source_of_name = "pyacoustid"
-                        break
-            except Exception as e:
-                # silent fail – online is optional
-                pass
+        search_text = f"{name_lower} {title} {artist}".lower()
 
-        # Prefer online result if available
-        if online_title:
-            title = online_title
-        if online_artist:
-            artist = online_artist
-
-        # Fallback: use original filename stem
-        if not title:
-            title = fpath.stem
-
-        # ---------- Build search text for Bhakti check ----------
-        search_text = f"{title} {artist} {fpath.stem}".lower()
-
-        # ---------- 3. Bhakti check ----------
+        # ---- 2. Strong Bhakti check ----
         is_bhakti = any(kw in search_text for kw in BHAKTI_KEYWORDS)
 
-        # ---------- 4. Year (still try from filename if missing) ----------
+        if is_bhakti:
+            new_name = self._make_name(artist, title, fpath.suffix) if title else None
+            return prefix + "bhakti", new_name, "Bhakti keyword found"
+
+        # If user selected "Only Bhakti" → stop here
+        if self.only_bhakti.get():
+            return None, None, "Only Bhakti mode - no keyword"
+
+        # ---- 3. Year based (only if clear year found) ----
         if year is None:
-            year = self._extract_year(fpath.stem)
+            year = self._extract_year(name_lower)
             if year is None and title:
                 year = self._extract_year(title)
 
-        # ---------- Decide category ----------
-        if is_bhakti:
-            category = prefix + "bhakti"
-        elif year is not None:
+        if year is not None:
+            new_name = self._make_name(artist, title, fpath.suffix) if title else None
             if year <= 1999:
-                category = prefix + "old"
+                return prefix + "old", new_name, f"Year {year} (Old)"
             elif 2000 <= year <= 2026:
-                category = prefix + "new"
-            else:
-                category = "unsorted"
-        else:
-            category = "unsorted"
+                return prefix + "new", new_name, f"Year {year} (New)"
 
-        # ---------- Build nice new filename ----------
-        new_name = None
-        if source_of_name in ("pyacoustid", "mutagen") and title:
-            new_name = self._make_safe_filename(artist, title, ext)
+        # ---- 4. Not confident → SKIP ----
+        return None, None, "No clear Bhakti keyword or Year found"
 
-        return category, new_name
-
-    def _make_safe_filename(self, artist: str, title: str, ext: str) -> str:
-        """Create clean 'Artist - Title.ext' or 'Title.ext' """
+    def _make_name(self, artist, title, ext):
         def clean(s):
             if not s:
                 return ""
-            # remove illegal filename chars
             s = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "", s)
             s = re.sub(r"\s+", " ", s).strip()
-            # limit length
-            return s[:80]
+            return s[:70]
 
         title = clean(title)
         artist = clean(artist)
-
         if not title:
             return None
-
         if artist:
-            name = f"{artist} - {title}"
-        else:
-            name = title
+            return f"{artist} - {title}{ext}"
+        return f"{title}{ext}"
 
-        # final safety
-        name = name.strip(" .")
-        if not name:
-            return None
-
-        return name + ext
-
-    def _extract_year(self, text: str):
-        """Find 4-digit year 1900-2026"""
+    def _extract_year(self, text):
         if not text:
             return None
-        matches = re.findall(r"\b(19[0-9]{2}|20[0-2][0-6])\b", str(text))
+        matches = re.findall(r"\b(19[5-9][0-9]|20[0-2][0-6])\b", str(text))
         if matches:
             return int(matches[0])
         return None
