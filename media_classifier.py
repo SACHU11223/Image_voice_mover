@@ -77,7 +77,7 @@ class MediaClassifierApp:
             self.root.mainloop()
 
     def _build_ui(self):
-        for w in self self.root.winfo_children():
+        for w in self.root.winfo_children():
             w.destroy()
 
         # Header
