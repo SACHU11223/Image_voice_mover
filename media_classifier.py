@@ -2,11 +2,9 @@
 Media Mover - Grid style sorter (same as Image Sorter)
 =====================================================
 - Grid view of Audio + Video files
-- Ctrl+Click multi-select
-- Drag & Drop to folders
-- No year / auto classification
-- Many formats supported
-- Lightweight (no extra software)
+- Video thumbnails (first frame) if opencv available
+- Ctrl+Click multi-select + Drag & Drop
+- Many formats
 """
 
 import os
@@ -14,6 +12,13 @@ import shutil
 import tkinter as tk
 from tkinter import filedialog, messagebox, simpledialog
 from PIL import Image, ImageTk, ImageDraw, ImageFont, ImageOps
+
+# Optional: for video thumbnails
+try:
+    import cv2
+    HAS_CV2 = True
+except ImportError:
+    HAS_CV2 = False
 
 # ================== CONFIG ==================
 AUDIO_EXTS = {
@@ -36,7 +41,6 @@ PANEL_BG = "#12121a"
 ACCENT = "#00d4ff"
 SELECT_COLOR = "#1e90ff"
 CARD_BG = "#1a1a24"
-CARD_BG_SEL = "#1e3a5f"
 
 NUMBER_COLORS = ["#ff4757", "#2ed573", "#1e90ff", "#ffa502", "#a55eea",
                  "#ff6b81", "#7bed9f", "#70a1ff", "#eccc68", "#5352ed",
@@ -65,6 +69,7 @@ class MediaMover:
         self.folders = []
         self.status_var = tk.StringVar(value="Select a Drive first")
         self.cell_labels = {}
+        self.thumb_cache = {}   # path -> PhotoImage (to avoid re-extract)
 
         self._build_start_ui()
         if self.own_root:
@@ -82,11 +87,19 @@ class MediaMover:
                          font=("Segoe UI", 28, "bold"), fg="#ffffff", bg=BG_COLOR)
         title.pack(pady=(20, 8))
 
-        sub = tk.Label(frame, text="Audio + Video • Grid view • Ctrl+Click • Drag to folders",
+        sub = tk.Label(frame, text="Audio + Video • Grid with thumbnails • Ctrl+Click • Drag to folders",
                        font=("Segoe UI", 13), fg="#888888", bg=BG_COLOR)
-        sub.pack(pady=(0, 25))
+        sub.pack(pady=(0, 15))
 
-        # Formats info
+        # Status of thumbnail support
+        if HAS_CV2:
+            thumb_status = "✅ Video thumbnails ON (opencv found)"
+            color = "#2ed573"
+        else:
+            thumb_status = "⚠ Video thumbnails OFF → pip install opencv-python-headless"
+            color = "#ffa502"
+        tk.Label(frame, text=thumb_status, font=("Segoe UI", 10), fg=color, bg=BG_COLOR).pack(pady=(0, 15))
+
         fmt = tk.Label(frame,
                        text="Supports: mp4 mkv avi mov 3gp webm flv  |  mp3 wav flac m4a aac ogg + more",
                        font=("Segoe UI", 10), fg="#555", bg=BG_COLOR)
@@ -113,7 +126,7 @@ class MediaMover:
                         bg=ACCENT, fg="#000000", activebackground="#00b8e0",
                         relief="flat", padx=32, pady=12,
                         command=self._select_folder)
-        btn.pack(pady=30)
+        btn.pack(pady=25)
 
         if not self.own_root:
             back_btn = tk.Button(frame, text="← Back to Menu",
@@ -127,7 +140,7 @@ class MediaMover:
         status.pack(side="bottom", pady=12)
 
         info = tk.Label(frame,
-                        text="Ctrl+Click = multi select   |   Drag → Folder   |   N = Refill   |   Esc = Exit",
+                        text="Ctrl+Click = multi select   |   Drag → Folder   |   N = Refill   |   Esc = Exit   |   Double-click = Open",
                         font=("Segoe UI", 10), fg="#555555", bg=BG_COLOR)
         info.pack(side="bottom")
 
@@ -151,6 +164,7 @@ class MediaMover:
         if not folder:
             return
         self.current_folder = folder
+        self.thumb_cache.clear()
         self._load_media()
         if not self.media_paths:
             messagebox.showinfo("No Media", "Is folder me koi supported audio/video nahi mili.")
@@ -191,7 +205,6 @@ class MediaMover:
         self.root.bind("<n>", lambda e: self._refill_grid())
         self.root.bind("<N>", lambda e: self._refill_grid())
 
-        # Top bar
         top = tk.Frame(self.root, bg=PANEL_BG, height=44)
         top.pack(fill="x")
         top.pack_propagate(False)
@@ -204,14 +217,12 @@ class MediaMover:
                                      font=("Segoe UI", 11), fg=ACCENT, bg=PANEL_BG)
         self.status_label.pack(side="right", padx=16)
 
-        # Main area
         main = tk.Frame(self.root, bg=BG_COLOR)
         main.pack(expand=True, fill="both")
 
         self.grid_frame = tk.Frame(main, bg=BG_COLOR)
         self.grid_frame.pack(side="left", expand=True, fill="both")
 
-        # RIGHT panel
         self.folder_panel = tk.Frame(main, bg=PANEL_BG, width=220)
         self.folder_panel.pack(side="right", fill="y")
         self.folder_panel.pack_propagate(False)
@@ -233,7 +244,6 @@ class MediaMover:
 
         canvas.pack(side="left", fill="both", expand=True, padx=4)
         scrollbar.pack(side="right", fill="y")
-        self.folder_canvas = canvas
 
         new_btn = tk.Button(self.folder_panel, text="+ New Folder",
                             font=("Segoe UI", 10, "bold"),
@@ -290,8 +300,8 @@ class MediaMover:
             w = self.root.winfo_screenwidth() - 220
             h = self.root.winfo_screenheight() - 50
 
-        cell_w = w // GRID_COLS
-        cell_h = h // GRID_ROWS
+        cell_w = max(80, w // GRID_COLS)
+        cell_h = max(80, h // GRID_ROWS)
 
         for idx in range(PAGE_SIZE):
             row = idx // GRID_COLS
@@ -300,64 +310,139 @@ class MediaMover:
 
             cell = tk.Frame(self.grid_frame, bg=BG_COLOR, width=cell_w, height=cell_h,
                             highlightthickness=0, bd=0)
-            cell.grid(row=row, column=col, sticky="nsew", padx=2, pady=2)
+            cell.grid(row=row, column=col, sticky="nsew", padx=1, pady=1)
             cell.grid_propagate(False)
-            self.grid_frame.grid_rowconfigure(row, weight=1, minsize=0)
-            self.grid_frame.grid_columnconfigure(col, weight=1, minsize=0)
+            self.grid_frame.grid_rowconfigure(row, weight=1)
+            self.grid_frame.grid_columnconfigure(col, weight=1)
 
             if idx < len(page_items):
                 path = page_items[idx]
                 self._place_media(cell, path, number, cell_w, cell_h)
-            else:
-                empty = tk.Label(cell, text="", bg=BG_COLOR)
-                empty.place(relx=0, rely=0, relwidth=1, relheight=1)
+
+    def _get_video_thumbnail(self, path, size):
+        """Extract first frame of video as PIL Image"""
+        if path in self.thumb_cache:
+            return self.thumb_cache[path]
+
+        if not HAS_CV2:
+            return None
+
+        try:
+            cap = cv2.VideoCapture(path)
+            ret, frame = cap.read()
+            cap.release()
+            if not ret or frame is None:
+                return None
+
+            # BGR → RGB
+            frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            img = Image.fromarray(frame)
+            img = ImageOps.fit(img, size, method=Image.Resampling.LANCZOS)
+            self.thumb_cache[path] = img
+            return img
+        except Exception:
+            return None
 
     def _place_media(self, cell, path, number, cell_w, cell_h):
         is_selected = path in self.selected
         is_video = os.path.splitext(path)[1].lower() in VIDEO_EXTS
+        size = (cell_w - 4, cell_h - 4)
 
-        bg = CARD_BG_SEL if is_selected else CARD_BG
-        card = tk.Frame(cell, bg=bg, highlightthickness=3 if is_selected else 1,
-                        highlightbackground=SELECT_COLOR if is_selected else "#2a2a3a")
-        card.place(relx=0.02, rely=0.02, relwidth=0.96, relheight=0.96)
+        # Try to get thumbnail for video
+        thumb = None
+        if is_video:
+            thumb = self._get_video_thumbnail(path, size)
 
-        # Icon
-        icon = "🎬" if is_video else "🎵"
-        icon_lbl = tk.Label(card, text=icon, font=("Segoe UI", 36),
-                            bg=bg, fg="#ffffff")
-        icon_lbl.place(relx=0.5, rely=0.32, anchor="center")
+        if thumb is not None:
+            # Real video thumbnail
+            img = thumb.copy()
 
-        # Filename (truncated)
-        name = os.path.basename(path)
-        if len(name) > 28:
-            name = name[:25] + "..."
-        name_lbl = tk.Label(card, text=name, font=("Segoe UI", 9),
-                            bg=bg, fg="#dddddd", wraplength=cell_w - 30)
-        name_lbl.place(relx=0.5, rely=0.68, anchor="center")
+            if is_selected:
+                img = ImageOps.grayscale(img).convert("RGB")
+                draw = ImageDraw.Draw(img)
+                draw.rectangle([0, 0, img.width-1, img.height-1], outline=SELECT_COLOR, width=5)
+                overlay = Image.new("RGB", img.size, SELECT_COLOR)
+                img = Image.blend(img, overlay, 0.15)
 
-        # Type badge
-        ext = os.path.splitext(path)[1].upper().replace(".", "")
-        type_lbl = tk.Label(card, text=ext, font=("Segoe UI", 8, "bold"),
-                            bg="#00d4ff" if is_video else "#a55eea", fg="#000",
-                            padx=6, pady=1)
-        type_lbl.place(relx=0.05, rely=0.05)
+            # Number badge
+            badge_size = 28
+            badge = Image.new("RGBA", (badge_size, badge_size), (0, 0, 0, 0))
+            draw = ImageDraw.Draw(badge)
+            color = NUMBER_COLORS[(number - 1) % len(NUMBER_COLORS)]
+            draw.ellipse([0, 0, badge_size-1, badge_size-1], fill=color)
+            try:
+                font = ImageFont.truetype("arial.ttf", 13)
+            except Exception:
+                font = ImageFont.load_default()
+            text = str(number)
+            bbox = draw.textbbox((0, 0), text, font=font)
+            tw, th = bbox[2]-bbox[0], bbox[3]-bbox[1]
+            draw.text(((badge_size-tw)//2, (badge_size-th)//2 - 1), text, fill="white", font=font)
 
-        # Number badge
-        num_color = NUMBER_COLORS[(number - 1) % len(NUMBER_COLORS)]
-        num_lbl = tk.Label(card, text=str(number), font=("Segoe UI", 9, "bold"),
-                           bg=num_color, fg="white", width=2)
-        num_lbl.place(relx=0.95, rely=0.05, anchor="ne")
+            img = img.convert("RGBA")
+            img.paste(badge, (img.width - badge_size - 4, 4), badge)
 
-        # Bind events to all parts of card
-        for widget in (card, icon_lbl, name_lbl, type_lbl, num_lbl):
-            widget.media_path = path
-            widget.bind("<Button-1>", self._on_click)
-            widget.bind("<Control-Button-1>", self._on_ctrl_click)
-            widget.bind("<B1-Motion>", self._on_drag_motion)
-            widget.bind("<ButtonRelease-1>", self._on_drag_release)
-            widget.bind("<Double-Button-1>", self._on_double_click)
+            # Small play icon overlay
+            play = Image.new("RGBA", (36, 36), (0, 0, 0, 0))
+            d = ImageDraw.Draw(play)
+            d.ellipse([0, 0, 35, 35], fill=(0, 0, 0, 160))
+            d.polygon([(13, 10), (13, 26), (26, 18)], fill="white")
+            img.paste(play, (8, img.height - 44), play)
 
-        self.cell_labels[path] = card
+            photo = ImageTk.PhotoImage(img)
+            self.photo_refs.append(photo)
+
+            lbl = tk.Label(cell, image=photo, bg=BG_COLOR, bd=0, highlightthickness=0,
+                           cursor="hand2")
+            lbl.place(x=0, y=0, relwidth=1, relheight=1)
+            lbl.media_path = path
+
+        else:
+            # Fallback: icon + filename card
+            bg = "#1e3a5f" if is_selected else CARD_BG
+            card = tk.Frame(cell, bg=bg, highlightthickness=3 if is_selected else 1,
+                            highlightbackground=SELECT_COLOR if is_selected else "#2a2a3a")
+            card.place(relx=0.02, rely=0.02, relwidth=0.96, relheight=0.96)
+
+            icon = "🎬" if is_video else "🎵"
+            icon_lbl = tk.Label(card, text=icon, font=("Segoe UI", 32), bg=bg, fg="white")
+            icon_lbl.place(relx=0.5, rely=0.30, anchor="center")
+
+            name = os.path.basename(path)
+            if len(name) > 26:
+                name = name[:23] + "..."
+            name_lbl = tk.Label(card, text=name, font=("Segoe UI", 9),
+                                bg=bg, fg="#dddddd", wraplength=cell_w-24)
+            name_lbl.place(relx=0.5, rely=0.65, anchor="center")
+
+            ext = os.path.splitext(path)[1].upper().replace(".", "")
+            type_lbl = tk.Label(card, text=ext, font=("Segoe UI", 8, "bold"),
+                                bg="#00d4ff" if is_video else "#a55eea", fg="#000", padx=5)
+            type_lbl.place(relx=0.05, rely=0.05)
+
+            num_color = NUMBER_COLORS[(number - 1) % len(NUMBER_COLORS)]
+            num_lbl = tk.Label(card, text=str(number), font=("Segoe UI", 9, "bold"),
+                               bg=num_color, fg="white", width=2)
+            num_lbl.place(relx=0.95, rely=0.05, anchor="ne")
+
+            for widget in (card, icon_lbl, name_lbl, type_lbl, num_lbl):
+                widget.media_path = path
+                widget.bind("<Button-1>", self._on_click)
+                widget.bind("<Control-Button-1>", self._on_ctrl_click)
+                widget.bind("<B1-Motion>", self._on_drag_motion)
+                widget.bind("<ButtonRelease-1>", self._on_drag_release)
+                widget.bind("<Double-Button-1>", self._on_double_click)
+
+            self.cell_labels[path] = card
+            return
+
+        # Bind for thumbnail version
+        lbl.bind("<Button-1>", self._on_click)
+        lbl.bind("<Control-Button-1>", self._on_ctrl_click)
+        lbl.bind("<B1-Motion>", self._on_drag_motion)
+        lbl.bind("<ButtonRelease-1>", self._on_drag_release)
+        lbl.bind("<Double-Button-1>", self._on_double_click)
+        self.cell_labels[path] = lbl
 
     # ---------- SELECTION ----------
     def _on_click(self, event):
@@ -381,11 +466,10 @@ class MediaMover:
         self._update_status()
 
     def _on_double_click(self, event):
-        """Open file with default player"""
         path = getattr(event.widget, "media_path", None)
         if path and os.path.exists(path):
             try:
-                os.startfile(path)   # Windows
+                os.startfile(path)
             except Exception:
                 pass
 
@@ -480,6 +564,8 @@ class MediaMover:
             if p in self.media_paths:
                 self.media_paths.remove(p)
             self.selected.discard(p)
+            if p in self.thumb_cache:
+                del self.thumb_cache[p]
 
         self._load_folders()
         self._render_folders()
