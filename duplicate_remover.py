@@ -2,10 +2,11 @@
 Image Duplicate Remover
 =======================
 - Scan folder + all subfolders
-- Find truly similar images (~50%+ match, strict)
-- Show ALL matching images of a group in scrollable grid
-- Select images to PRESERVE
-- Unselected ones move to temp/ folder in root
+- Find truly similar images (~50%+ match)
+- 4x4 responsive grid (grows with window)
+- Scroll when many images
+- Double-click = zoom, close button to exit zoom
+- Select to PRESERVE, rest → temp/
 """
 
 import os
@@ -27,11 +28,8 @@ IMAGE_EXTS = {
     ".heic", ".heif", ".ico", ".jfif", ".raw", ".cr2", ".nef", ".arw"
 }
 
-# STRICT threshold (~50%+ visual match)
 HASH_THRESHOLD = 8
-
-GRID_COLS = 4          # columns in grid
-THUMB_SIZE = 160       # each image size in grid
+GRID_COLS = 4
 
 BG = "#0a0a0e"
 PANEL = "#12121a"
@@ -66,11 +64,13 @@ class DuplicateRemover:
         self.selected = set()
         self.photo_refs = []
         self.status_var = tk.StringVar(value="Select a folder to scan")
+        self.zoom_win = None
 
         self._build_start_ui()
         if self.own_root:
             self.root.mainloop()
 
+    # ---------- START ----------
     def _build_start_ui(self):
         for w in self.root.winfo_children():
             w.destroy()
@@ -81,7 +81,7 @@ class DuplicateRemover:
         tk.Label(frame, text="🖼️  Image Duplicate Remover",
                  font=("Segoe UI", 26, "bold"), fg="white", bg=BG).pack(pady=(10, 6))
 
-        tk.Label(frame, text="Scan folder + subfolders → Group similar images → Keep selected → Move rest to temp",
+        tk.Label(frame, text="Scan → Group similar images → Keep selected → Rest to temp",
                  font=("Segoe UI", 11), fg="#888", bg=BG).pack(pady=(0, 20))
 
         if not HAS_IMAGEHASH:
@@ -101,15 +101,15 @@ class DuplicateRemover:
         tk.Label(frame, textvariable=self.status_var,
                  font=("Segoe UI", 10), fg="#666", bg=BG).pack(side="bottom", pady=10)
 
-        info = ("How it works:\n"
-                "1. Select root folder (all subfolders scanned)\n"
-                "2. Similar images shown together (ALL images of group)\n"
-                "3. Ctrl+Click select images you want to KEEP\n"
-                "4. Click PRESERVE → unselected move to temp/ folder")
+        info = ("• 4×4 grid – grows when you resize window\n"
+                "• Scroll when many images\n"
+                "• Double-click image = Zoom  |  Close to exit zoom\n"
+                "• Ctrl+Click select → PRESERVE → rest goes to temp/")
         tk.Label(frame, text=info, font=("Segoe UI", 10), fg="#555", bg=BG,
                  justify="left").pack(side="bottom", pady=15)
 
     def _go_back(self):
+        self._close_zoom()
         for w in self.root.winfo_children():
             w.destroy()
         from main import show_main_menu
@@ -117,8 +117,7 @@ class DuplicateRemover:
 
     def _select_and_scan(self):
         if not HAS_IMAGEHASH:
-            messagebox.showerror("Missing Library",
-                                 "Please install:\n\npip install imagehash")
+            messagebox.showerror("Missing Library", "Please install:\n\npip install imagehash")
             return
 
         folder = filedialog.askdirectory(title="Select Root Folder to Scan")
@@ -159,8 +158,7 @@ class DuplicateRemover:
         self.status_var.set(f"Found {total} images. Computing hashes...")
         self.root.update()
 
-        phashes = {}
-        ahashes = {}
+        phashes, ahashes = {}, {}
 
         for i, path in enumerate(all_images):
             try:
@@ -201,21 +199,19 @@ class DuplicateRemover:
         for i in range(n):
             for j in range(i + 1, n):
                 p1, p2 = paths[i], paths[j]
-                p_dist = phashes[p1] - phashes[p2]
-                a_dist = ahashes[p1] - ahashes[p2]
-                if p_dist <= HASH_THRESHOLD and a_dist <= HASH_THRESHOLD + 2:
+                if (phashes[p1] - phashes[p2]) <= HASH_THRESHOLD and \
+                   (ahashes[p1] - ahashes[p2]) <= HASH_THRESHOLD + 2:
                     union(p1, p2)
 
         clusters = {}
         for p in paths:
-            root_p = find(p)
-            clusters.setdefault(root_p, []).append(p)
+            clusters.setdefault(find(p), []).append(p)
 
         self.groups = [g for g in clusters.values() if len(g) >= 2]
         self.groups.sort(key=len, reverse=True)
+        self.status_var.set(f"Found {len(self.groups)} groups")
 
-        self.status_var.set(f"Found {len(self.groups)} groups of similar images")
-
+    # ---------- GROUP UI ----------
     def _show_group_ui(self):
         for w in self.root.winfo_children():
             w.destroy()
@@ -227,8 +223,7 @@ class DuplicateRemover:
         group = self.groups[self.current_group_idx]
         self.selected = set()
 
-        # Top bar
-        top = tk.Frame(self.root, bg=PANEL, height=50)
+        top = tk.Frame(self.root, bg=PANEL, height=48)
         top.pack(fill="x")
         top.pack_propagate(False)
 
@@ -237,129 +232,138 @@ class DuplicateRemover:
             font=("Segoe UI", 13, "bold"), fg="white", bg=PANEL)
         self.page_label.pack(side="left", padx=16, pady=10)
 
-        self.status_label = tk.Label(top, text="Select images to KEEP (Ctrl+Click)",
+        self.status_label = tk.Label(top, text="Ctrl+Click select  •  Double-click = Zoom",
                                      font=("Segoe UI", 11), fg=ACCENT, bg=PANEL)
         self.status_label.pack(side="right", padx=16)
 
-        # Main
         main = tk.Frame(self.root, bg=BG)
         main.pack(expand=True, fill="both")
 
-        # LEFT: scrollable grid (shows ALL images of group)
+        # LEFT – scrollable responsive grid
         left = tk.Frame(main, bg=BG)
-        left.pack(side="left", expand=True, fill="both", padx=6, pady=6)
+        left.pack(side="left", expand=True, fill="both", padx=4, pady=4)
 
-        canvas = tk.Canvas(left, bg=BG, highlightthickness=0)
-        scrollbar = tk.Scrollbar(left, orient="vertical", command=canvas.yview)
-        self.grid_inner = tk.Frame(canvas, bg=BG)
+        self.canvas = tk.Canvas(left, bg=BG, highlightthickness=0)
+        scrollbar = tk.Scrollbar(left, orient="vertical", command=self.canvas.yview)
+        self.grid_inner = tk.Frame(self.canvas, bg=BG)
 
-        self.grid_inner.bind(
-            "<Configure>",
-            lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
-        )
-        canvas.create_window((0, 0), window=self.grid_inner, anchor="nw")
-        canvas.configure(yscrollcommand=scrollbar.set)
+        self.grid_inner.bind("<Configure>",
+            lambda e: self.canvas.configure(scrollregion=self.canvas.bbox("all")))
+        self.canvas.create_window((0, 0), window=self.grid_inner, anchor="nw")
+        self.canvas.configure(yscrollcommand=scrollbar.set)
 
-        canvas.pack(side="left", fill="both", expand=True)
+        self.canvas.pack(side="left", fill="both", expand=True)
         scrollbar.pack(side="right", fill="y")
 
-        self.canvas = canvas
+        def _wheel(e):
+            self.canvas.yview_scroll(int(-1 * (e.delta / 120)), "units")
+        self.canvas.bind_all("<MouseWheel>", _wheel)
 
-        # Mouse wheel scroll
-        def _on_mousewheel(event):
-            canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
-        canvas.bind_all("<MouseWheel>", _on_mousewheel)
+        # Resize → re-render grid with new cell size
+        self.canvas.bind("<Configure>", self._on_canvas_resize)
+        self._resize_job = None
 
         # RIGHT panel
-        right = tk.Frame(main, bg=PANEL, width=210)
+        right = tk.Frame(main, bg=PANEL, width=200)
         right.pack(side="right", fill="y")
         right.pack_propagate(False)
 
         tk.Label(right, text="Actions", font=("Segoe UI", 12, "bold"),
-                 fg="white", bg=PANEL).pack(pady=(16, 10))
+                 fg="white", bg=PANEL).pack(pady=(14, 8))
 
-        tk.Label(right, text="Select images you want\nto KEEP.\n\nUnselected will go to\ntemp/ folder.",
-                 font=("Segoe UI", 10), fg="#aaa", bg=PANEL, justify="center").pack(pady=8)
+        tk.Label(right, text="Select images to KEEP.\nUnselected → temp/",
+                 font=("Segoe UI", 10), fg="#aaa", bg=PANEL, justify="center").pack(pady=6)
 
         tk.Button(right, text="✅  PRESERVE\nSelected",
                   font=("Segoe UI", 12, "bold"),
-                  bg=GREEN, fg="black", relief="flat",
-                  padx=12, pady=14, cursor="hand2",
-                  command=self._preserve_and_next).pack(fill="x", padx=16, pady=12)
+                  bg=GREEN, fg="black", relief="flat", padx=10, pady=12,
+                  cursor="hand2", command=self._preserve_and_next).pack(fill="x", padx=14, pady=10)
 
-        tk.Button(right, text="Skip this group →",
-                  font=("Segoe UI", 10),
-                  bg="#333", fg="white", relief="flat", pady=8,
-                  command=self._skip_group).pack(fill="x", padx=16, pady=4)
+        tk.Button(right, text="Skip group →", font=("Segoe UI", 10),
+                  bg="#333", fg="white", relief="flat", pady=7,
+                  command=self._skip_group).pack(fill="x", padx=14, pady=3)
 
-        tk.Button(right, text="Select All",
-                  font=("Segoe UI", 10),
+        tk.Button(right, text="Select All", font=("Segoe UI", 10),
                   bg="#444", fg="white", relief="flat", pady=6,
-                  command=self._select_all).pack(fill="x", padx=16, pady=4)
+                  command=self._select_all).pack(fill="x", padx=14, pady=3)
 
-        tk.Button(right, text="Clear Selection",
-                  font=("Segoe UI", 10),
+        tk.Button(right, text="Clear Selection", font=("Segoe UI", 10),
                   bg="#444", fg="white", relief="flat", pady=6,
-                  command=self._clear_selection).pack(fill="x", padx=16, pady=4)
+                  command=self._clear_selection).pack(fill="x", padx=14, pady=3)
 
         if not self.own_root:
-            tk.Button(right, text="← Menu",
-                      font=("Segoe UI", 10),
+            tk.Button(right, text="← Menu", font=("Segoe UI", 10),
                       bg="#222", fg="#aaa", relief="flat", pady=6,
-                      command=self._go_back).pack(side="bottom", fill="x", padx=16, pady=16)
+                      command=self._go_back).pack(side="bottom", fill="x", padx=14, pady=14)
 
-        self._render_group(group)
+        self.root.after(80, lambda: self._render_group(group))
+
+    def _on_canvas_resize(self, event):
+        # Debounce re-render on resize
+        if self._resize_job:
+            self.root.after_cancel(self._resize_job)
+        self._resize_job = self.root.after(150, self._refresh_selection)
+
+    def _cell_size(self):
+        """Compute cell size from current canvas width (4 columns)"""
+        self.canvas.update_idletasks()
+        w = self.canvas.winfo_width()
+        if w < 50:
+            w = 700
+        # 4 columns, small padding
+        size = max(100, (w - 24) // GRID_COLS)
+        return size
 
     def _render_group(self, group):
-        """Show ALL images in the group (scrollable)"""
         for w in self.grid_inner.winfo_children():
             w.destroy()
         self.photo_refs.clear()
 
-        # Show every image in the group
+        cell = self._cell_size()
+
         for idx, path in enumerate(group):
             row = idx // GRID_COLS
             col = idx % GRID_COLS
 
-            cell = tk.Frame(self.grid_inner, bg=BG, width=THUMB_SIZE, height=THUMB_SIZE)
-            cell.grid(row=row, column=col, padx=4, pady=4)
-            cell.grid_propagate(False)
+            frame = tk.Frame(self.grid_inner, bg=BG, width=cell, height=cell)
+            frame.grid(row=row, column=col, padx=3, pady=3)
+            frame.grid_propagate(False)
 
-            self._place_image(cell, path, idx + 1, THUMB_SIZE, THUMB_SIZE)
+            self._place_image(frame, path, idx + 1, cell, cell)
 
-        # Force scrollregion update
         self.grid_inner.update_idletasks()
         self.canvas.configure(scrollregion=self.canvas.bbox("all"))
 
     def _place_image(self, cell, path, number, cell_w, cell_h):
         try:
             img = Image.open(path).convert("RGB")
-            img = ImageOps.fit(img, (cell_w - 4, cell_h - 4), method=Image.Resampling.LANCZOS)
+            img = ImageOps.fit(img, (max(40, cell_w - 6), max(40, cell_h - 6)),
+                              method=Image.Resampling.LANCZOS)
 
-            is_sel = path in self.selected
-
-            if is_sel:
+            if path in self.selected:
                 draw = ImageDraw.Draw(img)
-                draw.rectangle([0, 0, img.width-1, img.height-1], outline=SELECT_COLOR, width=5)
+                draw.rectangle([0, 0, img.width-1, img.height-1],
+                               outline=SELECT_COLOR, width=5)
                 overlay = Image.new("RGB", img.size, SELECT_COLOR)
                 img = Image.blend(img, overlay, 0.12)
 
-            badge_size = 24
-            badge = Image.new("RGBA", (badge_size, badge_size), (0, 0, 0, 0))
+            # Number badge
+            bs = max(18, min(28, cell_w // 8))
+            badge = Image.new("RGBA", (bs, bs), (0, 0, 0, 0))
             d = ImageDraw.Draw(badge)
             color = NUMBER_COLORS[(number - 1) % len(NUMBER_COLORS)]
-            d.ellipse([0, 0, badge_size-1, badge_size-1], fill=color)
+            d.ellipse([0, 0, bs-1, bs-1], fill=color)
             try:
-                font = ImageFont.truetype("arial.ttf", 11)
+                font = ImageFont.truetype("arial.ttf", max(9, bs - 12))
             except Exception:
                 font = ImageFont.load_default()
-            text = str(number)
-            bbox = d.textbbox((0, 0), text, font=font)
-            tw, th = bbox[2]-bbox[0], bbox[3]-bbox[1]
-            d.text(((badge_size-tw)//2, (badge_size-th)//2 - 1), text, fill="white", font=font)
+            t = str(number)
+            bb = d.textbbox((0, 0), t, font=font)
+            tw, th = bb[2]-bb[0], bb[3]-bb[1]
+            d.text(((bs-tw)//2, (bs-th)//2 - 1), t, fill="white", font=font)
 
             img = img.convert("RGBA")
-            img.paste(badge, (img.width - badge_size - 3, 3), badge)
+            img.paste(badge, (img.width - bs - 3, 3), badge)
 
             photo = ImageTk.PhotoImage(img)
             self.photo_refs.append(photo)
@@ -370,11 +374,61 @@ class DuplicateRemover:
 
             lbl.bind("<Button-1>", self._on_click)
             lbl.bind("<Control-Button-1>", self._on_ctrl_click)
+            lbl.bind("<Double-Button-1>", self._on_double_click)
 
         except Exception:
-            err = tk.Label(cell, text="Error", fg=RED, bg=BG)
-            err.place(relx=0.5, rely=0.5, anchor="center")
+            tk.Label(cell, text="Error", fg=RED, bg=BG).place(relx=0.5, rely=0.5, anchor="center")
 
+    # ---------- ZOOM ----------
+    def _on_double_click(self, event):
+        path = getattr(event.widget, "image_path", None)
+        if path:
+            self._open_zoom(path)
+
+    def _open_zoom(self, path):
+        self._close_zoom()
+
+        win = tk.Toplevel(self.root)
+        win.title(Path(path).name)
+        win.configure(bg="#000")
+        win.attributes("-topmost", True)
+
+        # Fit to screen roughly
+        sw = self.root.winfo_screenwidth() - 80
+        sh = self.root.winfo_screenheight() - 100
+        win.geometry(f"{min(1000, sw)}x{min(700, sh)}")
+
+        try:
+            img = Image.open(path).convert("RGB")
+            # Fit inside window
+            img.thumbnail((sw - 40, sh - 80), Image.Resampling.LANCZOS)
+            photo = ImageTk.PhotoImage(img)
+
+            lbl = tk.Label(win, image=photo, bg="#000")
+            lbl.image = photo
+            lbl.pack(expand=True, fill="both", padx=8, pady=8)
+
+            btn = tk.Button(win, text="✕  Close", font=("Segoe UI", 11, "bold"),
+                            bg=RED, fg="white", relief="flat", padx=16, pady=6,
+                            command=win.destroy)
+            btn.pack(pady=8)
+
+            win.bind("<Escape>", lambda e: win.destroy)
+            self.zoom_win = win
+
+        except Exception as e:
+            win.destroy()
+            messagebox.showerror("Zoom Error", str(e))
+
+    def _close_zoom(self):
+        if self.zoom_win and self.zoom_win.winfo_exists():
+            try:
+                self.zoom_win.destroy()
+            except Exception:
+                pass
+        self.zoom_win = None
+
+    # ---------- SELECTION ----------
     def _on_click(self, event):
         path = getattr(event.widget, "image_path", None)
         if not path:
@@ -394,23 +448,25 @@ class DuplicateRemover:
         self._refresh_selection()
 
     def _refresh_selection(self):
+        if self.current_group_idx >= len(self.groups):
+            return
         group = self.groups[self.current_group_idx]
         self._render_group(group)
         count = len(self.selected)
         total = len(group)
         self.status_label.config(
-            text=f"{count} selected to KEEP  •  {total - count} will go to temp",
+            text=f"{count} KEEP  •  {total - count} → temp  •  Double-click = Zoom",
             fg=GREEN if count else ACCENT)
 
     def _select_all(self):
-        group = self.groups[self.current_group_idx]
-        self.selected = set(group)
+        self.selected = set(self.groups[self.current_group_idx])
         self._refresh_selection()
 
     def _clear_selection(self):
         self.selected.clear()
         self._refresh_selection()
 
+    # ---------- ACTIONS ----------
     def _preserve_and_next(self):
         group = self.groups[self.current_group_idx]
         to_move = [p for p in group if p not in self.selected]
@@ -422,7 +478,6 @@ class DuplicateRemover:
         if to_move:
             temp_dir = Path(self.root_folder) / "temp"
             temp_dir.mkdir(exist_ok=True)
-
             moved = 0
             for src in to_move:
                 try:
@@ -438,8 +493,7 @@ class DuplicateRemover:
                     moved += 1
                 except Exception as e:
                     print("Move error:", e)
-
-            self.status_label.config(text=f"Moved {moved} images to temp/", fg=ORANGE)
+            self.status_label.config(text=f"Moved {moved} → temp/", fg=ORANGE)
             self.root.update()
 
         self._next_group()
@@ -448,6 +502,7 @@ class DuplicateRemover:
         self._next_group()
 
     def _next_group(self):
+        self._close_zoom()
         self.current_group_idx += 1
         self.selected.clear()
         if self.current_group_idx >= len(self.groups):
@@ -456,6 +511,7 @@ class DuplicateRemover:
             self._show_group_ui()
 
     def _show_finished(self):
+        self._close_zoom()
         for w in self.root.winfo_children():
             w.destroy()
 
@@ -465,8 +521,7 @@ class DuplicateRemover:
         tk.Label(frame, text="✅  All groups processed",
                  font=("Segoe UI", 22, "bold"), fg=GREEN, bg=BG).pack(pady=(80, 15))
 
-        tk.Label(frame, text="Unselected images have been moved to:\n"
-                             f"{self.root_folder}\\temp",
+        tk.Label(frame, text=f"Unselected images moved to:\n{self.root_folder}\\temp",
                  font=("Segoe UI", 12), fg="#ccc", bg=BG, justify="center").pack(pady=10)
 
         tk.Button(frame, text="Scan Another Folder",
@@ -475,8 +530,7 @@ class DuplicateRemover:
                   command=self._build_start_ui).pack(pady=20)
 
         if not self.own_root:
-            tk.Button(frame, text="← Back to Menu",
-                      font=("Segoe UI", 11),
+            tk.Button(frame, text="← Back to Menu", font=("Segoe UI", 11),
                       bg="#333", fg="white", relief="flat", padx=16, pady=6,
                       command=self._go_back).pack(pady=8)
 
