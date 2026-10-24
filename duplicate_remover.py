@@ -2,8 +2,8 @@
 Image Duplicate Remover
 =======================
 - Scan folder + all subfolders
-- Find similar images (>= 30% match using perceptual hash)
-- Show each similar group in a grid (all matching images together)
+- Find truly similar images (~50%+ match, strict)
+- Show each similar group in a grid
 - Select images to PRESERVE
 - Unselected ones move to temp/ folder in root
 """
@@ -27,19 +27,19 @@ IMAGE_EXTS = {
     ".heic", ".heif", ".ico", ".jfif", ".raw", ".cr2", ".nef", ".arw"
 }
 
-# Hamming distance for ~30%+ similarity (higher = more lenient)
-# 0 = identical, ~22 = roughly 30% similar look
-HASH_THRESHOLD = 22
+# STRICT threshold for real similarity (~50%+ visual match)
+# Lower number = stricter (only very similar images group)
+# 0 = identical, 5-8 = very similar, 10 = similar, 15+ = often different
+HASH_THRESHOLD = 8
 
 GRID_COLS = 5
 GRID_ROWS = 3
-PAGE_SIZE = GRID_COLS * GRID_ROWS   # 15 images per view
+PAGE_SIZE = GRID_COLS * GRID_ROWS
 
 BG = "#0a0a0e"
 PANEL = "#12121a"
 ACCENT = "#00d4ff"
 SELECT_COLOR = "#2ed573"
-CARD_BG = "#1a1a24"
 ORANGE = "#ffa502"
 RED = "#ff4757"
 GREEN = "#2ed573"
@@ -74,7 +74,6 @@ class DuplicateRemover:
         if self.own_root:
             self.root.mainloop()
 
-    # ---------- START UI ----------
     def _build_start_ui(self):
         for w in self.root.winfo_children():
             w.destroy()
@@ -85,7 +84,7 @@ class DuplicateRemover:
         tk.Label(frame, text="🖼️  Image Duplicate Remover",
                  font=("Segoe UI", 26, "bold"), fg="white", bg=BG).pack(pady=(10, 6))
 
-        tk.Label(frame, text="Scan folder + subfolders → Group similar images (≥30% match) → Keep selected → Move rest to temp",
+        tk.Label(frame, text="Scan folder + subfolders → Group truly similar images → Keep selected → Move rest to temp",
                  font=("Segoe UI", 11), fg="#888", bg=BG).pack(pady=(0, 20))
 
         if not HAS_IMAGEHASH:
@@ -107,7 +106,7 @@ class DuplicateRemover:
 
         info = ("How it works:\n"
                 "1. Select root folder (all subfolders scanned)\n"
-                "2. Images with ≥30% match shown together in one group/grid\n"
+                "2. Only truly similar images (~50%+ match) shown in groups\n"
                 "3. Ctrl+Click select images you want to KEEP\n"
                 "4. Click PRESERVE → unselected move to temp/ folder")
         tk.Label(frame, text=info, font=("Segoe UI", 10), fg="#555", bg=BG,
@@ -141,7 +140,7 @@ class DuplicateRemover:
             return
 
         if not self.groups:
-            messagebox.showinfo("Done", "Koi similar images nahi mili (30% match).")
+            messagebox.showinfo("Done", "Koi similar images nahi mili.")
             self.status_var.set("No similar images found")
             return
 
@@ -150,13 +149,12 @@ class DuplicateRemover:
         self._show_group_ui()
 
     def _scan_and_group(self, root):
-        """Scan all images and group by perceptual hash (≥30% similarity)"""
+        """Strict grouping - only images that really look similar"""
         root = Path(root)
         all_images = []
 
         for f in root.rglob("*"):
             if f.is_file() and f.suffix.lower() in IMAGE_EXTS:
-                # skip anything already inside a temp folder
                 if "temp" in [p.lower() for p in f.parts]:
                     continue
                 all_images.append(f)
@@ -165,28 +163,32 @@ class DuplicateRemover:
         self.status_var.set(f"Found {total} images. Computing hashes...")
         self.root.update()
 
-        # Compute perceptual hashes
-        hashes = {}
+        # Use two hashes for better accuracy
+        phashes = {}
+        ahashes = {}
+
         for i, path in enumerate(all_images):
             try:
                 with Image.open(path) as im:
                     im = im.convert("RGB")
-                    h = imagehash.phash(im)
-                    hashes[str(path)] = h
+                    # Resize large images for speed
+                    if max(im.size) > 1000:
+                        im.thumbnail((1000, 1000))
+                    phashes[str(path)] = imagehash.phash(im)
+                    ahashes[str(path)] = imagehash.average_hash(im)
             except Exception:
                 continue
             if i % 15 == 0:
                 self.status_var.set(f"Hashing... {i+1}/{total}")
                 self.root.update()
 
-        paths = list(hashes.keys())
+        paths = list(phashes.keys())
         n = len(paths)
         if n < 2:
             self.groups = []
             return
 
-        # Union-Find for transitive grouping
-        # (if A matches B and B matches C → A,B,C same group)
+        # Union-Find
         parent = {p: p for p in paths}
 
         def find(x):
@@ -200,32 +202,31 @@ class DuplicateRemover:
             if ra != rb:
                 parent[rb] = ra
 
-        self.status_var.set("Grouping similar images...")
+        self.status_var.set("Grouping similar images (strict)...")
         self.root.update()
 
         for i in range(n):
             for j in range(i + 1, n):
                 p1, p2 = paths[i], paths[j]
-                dist = hashes[p1] - hashes[p2]
-                if dist <= HASH_THRESHOLD:
+
+                # Both hashes must be close (stricter = fewer false matches)
+                p_dist = phashes[p1] - phashes[p2]
+                a_dist = ahashes[p1] - ahashes[p2]
+
+                if p_dist <= HASH_THRESHOLD and a_dist <= HASH_THRESHOLD + 2:
                     union(p1, p2)
 
         # Build groups
         clusters = {}
         for p in paths:
             root_p = find(p)
-            if root_p not in clusters:
-                clusters[root_p] = []
-            clusters[root_p].append(p)
+            clusters.setdefault(root_p, []).append(p)
 
-        # Only keep groups that have 2+ images
         self.groups = [g for g in clusters.values() if len(g) >= 2]
-        # Sort groups by size (largest first)
         self.groups.sort(key=len, reverse=True)
 
-        self.status_var.set(f"Found {len(self.groups)} groups (≥30% match)")
+        self.status_var.set(f"Found {len(self.groups)} groups of similar images")
 
-    # ---------- GROUP VIEW UI ----------
     def _show_group_ui(self):
         for w in self.root.winfo_children():
             w.destroy()
@@ -237,13 +238,12 @@ class DuplicateRemover:
         group = self.groups[self.current_group_idx]
         self.selected = set()
 
-        # Top bar
         top = tk.Frame(self.root, bg=PANEL, height=50)
         top.pack(fill="x")
         top.pack_propagate(False)
 
         self.page_label = tk.Label(top,
-            text=f"Group {self.current_group_idx + 1} / {len(self.groups)}   •   {len(group)} similar images (≥30% match)",
+            text=f"Group {self.current_group_idx + 1} / {len(self.groups)}   •   {len(group)} similar images",
             font=("Segoe UI", 13, "bold"), fg="white", bg=PANEL)
         self.page_label.pack(side="left", padx=16, pady=10)
 
@@ -251,14 +251,12 @@ class DuplicateRemover:
                                      font=("Segoe UI", 11), fg=ACCENT, bg=PANEL)
         self.status_label.pack(side="right", padx=16)
 
-        # Main
         main = tk.Frame(self.root, bg=BG)
         main.pack(expand=True, fill="both")
 
         self.grid_frame = tk.Frame(main, bg=BG)
         self.grid_frame.pack(side="left", expand=True, fill="both", padx=8, pady=8)
 
-        # Right panel
         right = tk.Frame(main, bg=PANEL, width=210)
         right.pack(side="right", fill="y")
         right.pack_propagate(False)
@@ -307,7 +305,6 @@ class DuplicateRemover:
         w = self.grid_frame.winfo_width() or 750
         h = self.grid_frame.winfo_height() or 520
 
-        # Show as many as possible (up to PAGE_SIZE)
         show_list = group[:PAGE_SIZE]
         cols = min(GRID_COLS, max(1, len(show_list)))
         rows = (len(show_list) + cols - 1) // cols
@@ -329,7 +326,7 @@ class DuplicateRemover:
 
         if len(group) > PAGE_SIZE:
             note = tk.Label(self.grid_frame,
-                            text=f"Showing first {PAGE_SIZE} of {len(group)} matching images",
+                            text=f"Showing first {PAGE_SIZE} of {len(group)} similar images",
                             font=("Segoe UI", 9), fg="#666", bg=BG)
             note.grid(row=rows, column=0, columnspan=cols, pady=6)
 
@@ -377,7 +374,6 @@ class DuplicateRemover:
             err = tk.Label(cell, text="Error", fg=RED, bg=BG)
             err.place(relx=0.5, rely=0.5, anchor="center")
 
-    # ---------- SELECTION ----------
     def _on_click(self, event):
         path = getattr(event.widget, "image_path", None)
         if not path:
@@ -414,7 +410,6 @@ class DuplicateRemover:
         self.selected.clear()
         self._refresh_selection()
 
-    # ---------- ACTIONS ----------
     def _preserve_and_next(self):
         group = self.groups[self.current_group_idx]
         to_move = [p for p in group if p not in self.selected]
