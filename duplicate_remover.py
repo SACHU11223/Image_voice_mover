@@ -2,8 +2,8 @@
 Image Duplicate Remover
 =======================
 - Scan folder + all subfolders
-- Find similar images (>= 50% match using perceptual hash)
-- Show each similar group in a grid
+- Find similar images (>= 30% match using perceptual hash)
+- Show each similar group in a grid (all matching images together)
 - Select images to PRESERVE
 - Unselected ones move to temp/ folder in root
 """
@@ -11,9 +11,8 @@ Image Duplicate Remover
 import os
 import shutil
 from pathlib import Path
-from collections import defaultdict
 import tkinter as tk
-from tkinter import filedialog, messagebox, ttk
+from tkinter import filedialog, messagebox
 from PIL import Image, ImageTk, ImageOps, ImageDraw, ImageFont
 
 try:
@@ -28,18 +27,18 @@ IMAGE_EXTS = {
     ".heic", ".heif", ".ico", ".jfif", ".raw", ".cr2", ".nef", ".arw"
 }
 
-# Hamming distance threshold for ~50%+ similarity
-# (lower = stricter). 10-14 works well for perceptual hash
-HASH_THRESHOLD = 12
+# Hamming distance for ~30%+ similarity (higher = more lenient)
+# 0 = identical, ~22 = roughly 30% similar look
+HASH_THRESHOLD = 22
 
-GRID_COLS = 4
+GRID_COLS = 5
 GRID_ROWS = 3
-PAGE_SIZE = GRID_COLS * GRID_ROWS
+PAGE_SIZE = GRID_COLS * GRID_ROWS   # 15 images per view
 
 BG = "#0a0a0e"
 PANEL = "#12121a"
 ACCENT = "#00d4ff"
-SELECT_COLOR = "#2ed573"   # green for preserve
+SELECT_COLOR = "#2ed573"
 CARD_BG = "#1a1a24"
 ORANGE = "#ffa502"
 RED = "#ff4757"
@@ -47,7 +46,7 @@ GREEN = "#2ed573"
 
 NUMBER_COLORS = ["#ff4757", "#2ed573", "#1e90ff", "#ffa502", "#a55eea",
                  "#ff6b81", "#7bed9f", "#70a1ff", "#eccc68", "#5352ed",
-                 "#ff6348", "#2f3542"]
+                 "#ff6348", "#2f3542", "#ff9ff3", "#54a0ff", "#5f27cd"]
 
 
 class DuplicateRemover:
@@ -61,13 +60,13 @@ class DuplicateRemover:
 
         self.root.title("Image Duplicate Remover")
         self.root.configure(bg=BG)
-        self.root.geometry("1100x700")
+        self.root.geometry("1150x720")
         self.root.minsize(900, 550)
 
         self.root_folder = None
-        self.groups = []          # list of lists of image paths
+        self.groups = []
         self.current_group_idx = 0
-        self.selected = set()     # paths to PRESERVE
+        self.selected = set()
         self.photo_refs = []
         self.status_var = tk.StringVar(value="Select a folder to scan")
 
@@ -86,7 +85,7 @@ class DuplicateRemover:
         tk.Label(frame, text="🖼️  Image Duplicate Remover",
                  font=("Segoe UI", 26, "bold"), fg="white", bg=BG).pack(pady=(10, 6))
 
-        tk.Label(frame, text="Scan folder + subfolders → Group similar images → Keep selected → Move rest to temp",
+        tk.Label(frame, text="Scan folder + subfolders → Group similar images (≥30% match) → Keep selected → Move rest to temp",
                  font=("Segoe UI", 11), fg="#888", bg=BG).pack(pady=(0, 20))
 
         if not HAS_IMAGEHASH:
@@ -108,7 +107,7 @@ class DuplicateRemover:
 
         info = ("How it works:\n"
                 "1. Select root folder (all subfolders scanned)\n"
-                "2. Similar images (>=50% match) shown group by group\n"
+                "2. Images with ≥30% match shown together in one group/grid\n"
                 "3. Ctrl+Click select images you want to KEEP\n"
                 "4. Click PRESERVE → unselected move to temp/ folder")
         tk.Label(frame, text=info, font=("Segoe UI", 10), fg="#555", bg=BG,
@@ -142,8 +141,8 @@ class DuplicateRemover:
             return
 
         if not self.groups:
-            messagebox.showinfo("Done", "Koi similar images nahi mili.")
-            self.status_var.set("No duplicates found")
+            messagebox.showinfo("Done", "Koi similar images nahi mili (30% match).")
+            self.status_var.set("No similar images found")
             return
 
         self.current_group_idx = 0
@@ -151,21 +150,22 @@ class DuplicateRemover:
         self._show_group_ui()
 
     def _scan_and_group(self, root):
-        """Scan all images and group by perceptual hash similarity"""
+        """Scan all images and group by perceptual hash (≥30% similarity)"""
         root = Path(root)
         all_images = []
 
         for f in root.rglob("*"):
             if f.is_file() and f.suffix.lower() in IMAGE_EXTS:
-                # skip temp folder itself
-                if "temp" in f.parts and f.parts[-2] == "temp":
+                # skip anything already inside a temp folder
+                if "temp" in [p.lower() for p in f.parts]:
                     continue
                 all_images.append(f)
 
-        self.status_var.set(f"Found {len(all_images)} images. Computing hashes...")
+        total = len(all_images)
+        self.status_var.set(f"Found {total} images. Computing hashes...")
         self.root.update()
 
-        # Compute hashes
+        # Compute perceptual hashes
         hashes = {}
         for i, path in enumerate(all_images):
             try:
@@ -175,35 +175,55 @@ class DuplicateRemover:
                     hashes[str(path)] = h
             except Exception:
                 continue
-            if i % 20 == 0:
-                self.status_var.set(f"Hashing... {i+1}/{len(all_images)}")
+            if i % 15 == 0:
+                self.status_var.set(f"Hashing... {i+1}/{total}")
                 self.root.update()
 
-        # Group similar images
         paths = list(hashes.keys())
-        used = set()
-        groups = []
+        n = len(paths)
+        if n < 2:
+            self.groups = []
+            return
 
-        for i, p1 in enumerate(paths):
-            if p1 in used:
-                continue
-            group = [p1]
-            used.add(p1)
-            h1 = hashes[p1]
+        # Union-Find for transitive grouping
+        # (if A matches B and B matches C → A,B,C same group)
+        parent = {p: p for p in paths}
 
-            for p2 in paths[i+1:]:
-                if p2 in used:
-                    continue
-                dist = h1 - hashes[p2]
+        def find(x):
+            while parent[x] != x:
+                parent[x] = parent[parent[x]]
+                x = parent[x]
+            return x
+
+        def union(a, b):
+            ra, rb = find(a), find(b)
+            if ra != rb:
+                parent[rb] = ra
+
+        self.status_var.set("Grouping similar images...")
+        self.root.update()
+
+        for i in range(n):
+            for j in range(i + 1, n):
+                p1, p2 = paths[i], paths[j]
+                dist = hashes[p1] - hashes[p2]
                 if dist <= HASH_THRESHOLD:
-                    group.append(p2)
-                    used.add(p2)
+                    union(p1, p2)
 
-            if len(group) >= 2:   # only groups with duplicates
-                groups.append(group)
+        # Build groups
+        clusters = {}
+        for p in paths:
+            root_p = find(p)
+            if root_p not in clusters:
+                clusters[root_p] = []
+            clusters[root_p].append(p)
 
-        self.groups = groups
-        self.status_var.set(f"Found {len(groups)} groups of similar images")
+        # Only keep groups that have 2+ images
+        self.groups = [g for g in clusters.values() if len(g) >= 2]
+        # Sort groups by size (largest first)
+        self.groups.sort(key=len, reverse=True)
+
+        self.status_var.set(f"Found {len(self.groups)} groups (≥30% match)")
 
     # ---------- GROUP VIEW UI ----------
     def _show_group_ui(self):
@@ -215,7 +235,7 @@ class DuplicateRemover:
             return
 
         group = self.groups[self.current_group_idx]
-        self.selected = set()   # reset selection for new group
+        self.selected = set()
 
         # Top bar
         top = tk.Frame(self.root, bg=PANEL, height=50)
@@ -223,7 +243,7 @@ class DuplicateRemover:
         top.pack_propagate(False)
 
         self.page_label = tk.Label(top,
-            text=f"Group {self.current_group_idx + 1} / {len(self.groups)}   •   {len(group)} similar images",
+            text=f"Group {self.current_group_idx + 1} / {len(self.groups)}   •   {len(group)} similar images (≥30% match)",
             font=("Segoe UI", 13, "bold"), fg="white", bg=PANEL)
         self.page_label.pack(side="left", padx=16, pady=10)
 
@@ -231,15 +251,14 @@ class DuplicateRemover:
                                      font=("Segoe UI", 11), fg=ACCENT, bg=PANEL)
         self.status_label.pack(side="right", padx=16)
 
-        # Main area
+        # Main
         main = tk.Frame(self.root, bg=BG)
         main.pack(expand=True, fill="both")
 
-        # LEFT: grid
         self.grid_frame = tk.Frame(main, bg=BG)
         self.grid_frame.pack(side="left", expand=True, fill="both", padx=8, pady=8)
 
-        # RIGHT: actions
+        # Right panel
         right = tk.Frame(main, bg=PANEL, width=210)
         right.pack(side="right", fill="y")
         right.pack_propagate(False)
@@ -250,12 +269,11 @@ class DuplicateRemover:
         tk.Label(right, text="Select images you want\nto KEEP.\n\nUnselected will go to\ntemp/ folder.",
                  font=("Segoe UI", 10), fg="#aaa", bg=PANEL, justify="center").pack(pady=8)
 
-        self.preserve_btn = tk.Button(right, text="✅  PRESERVE\nSelected",
-                                      font=("Segoe UI", 12, "bold"),
-                                      bg=GREEN, fg="black", relief="flat",
-                                      padx=12, pady=14, cursor="hand2",
-                                      command=self._preserve_and_next)
-        self.preserve_btn.pack(fill="x", padx=16, pady=12)
+        tk.Button(right, text="✅  PRESERVE\nSelected",
+                  font=("Segoe UI", 12, "bold"),
+                  bg=GREEN, fg="black", relief="flat",
+                  padx=12, pady=14, cursor="hand2",
+                  command=self._preserve_and_next).pack(fill="x", padx=16, pady=12)
 
         tk.Button(right, text="Skip this group →",
                   font=("Segoe UI", 10),
@@ -286,16 +304,16 @@ class DuplicateRemover:
         self.photo_refs.clear()
 
         self.root.update_idletasks()
-        w = self.grid_frame.winfo_width() or 700
-        h = self.grid_frame.winfo_height() or 500
+        w = self.grid_frame.winfo_width() or 750
+        h = self.grid_frame.winfo_height() or 520
 
-        # Show up to PAGE_SIZE, or all if smaller
-        show_list = group[:PAGE_SIZE] if len(group) > PAGE_SIZE else group
-        cols = min(GRID_COLS, len(show_list))
+        # Show as many as possible (up to PAGE_SIZE)
+        show_list = group[:PAGE_SIZE]
+        cols = min(GRID_COLS, max(1, len(show_list)))
         rows = (len(show_list) + cols - 1) // cols
 
-        cell_w = max(120, w // max(cols, 1) - 6)
-        cell_h = max(120, h // max(rows, 1) - 6)
+        cell_w = max(110, w // cols - 6)
+        cell_h = max(110, h // max(rows, 1) - 6)
 
         for idx, path in enumerate(show_list):
             row = idx // cols
@@ -311,7 +329,7 @@ class DuplicateRemover:
 
         if len(group) > PAGE_SIZE:
             note = tk.Label(self.grid_frame,
-                            text=f"Showing first {PAGE_SIZE} of {len(group)} similar images",
+                            text=f"Showing first {PAGE_SIZE} of {len(group)} matching images",
                             font=("Segoe UI", 9), fg="#666", bg=BG)
             note.grid(row=rows, column=0, columnspan=cols, pady=6)
 
@@ -323,13 +341,11 @@ class DuplicateRemover:
             is_sel = path in self.selected
 
             if is_sel:
-                # Green highlight = will be preserved
                 draw = ImageDraw.Draw(img)
                 draw.rectangle([0, 0, img.width-1, img.height-1], outline=SELECT_COLOR, width=6)
                 overlay = Image.new("RGB", img.size, SELECT_COLOR)
                 img = Image.blend(img, overlay, 0.12)
 
-            # Number badge
             badge_size = 26
             badge = Image.new("RGBA", (badge_size, badge_size), (0, 0, 0, 0))
             d = ImageDraw.Draw(badge)
@@ -346,11 +362,6 @@ class DuplicateRemover:
 
             img = img.convert("RGBA")
             img.paste(badge, (img.width - badge_size - 3, 3), badge)
-
-            # Filename small
-            name = Path(path).name
-            if len(name) > 22:
-                name = name[:19] + "..."
 
             photo = ImageTk.PhotoImage(img)
             self.photo_refs.append(photo)
@@ -409,7 +420,6 @@ class DuplicateRemover:
         to_move = [p for p in group if p not in self.selected]
 
         if not to_move and not self.selected:
-            # nothing selected and nothing to move → just skip
             self._next_group()
             return
 
@@ -422,7 +432,6 @@ class DuplicateRemover:
                 try:
                     src_path = Path(src)
                     dest = temp_dir / src_path.name
-                    # avoid overwrite
                     if dest.exists():
                         stem, suffix = src_path.stem, src_path.suffix
                         c = 1
@@ -434,8 +443,7 @@ class DuplicateRemover:
                 except Exception as e:
                     print("Move error:", e)
 
-            self.status_label.config(
-                text=f"Moved {moved} images to temp/", fg=ORANGE)
+            self.status_label.config(text=f"Moved {moved} images to temp/", fg=ORANGE)
             self.root.update()
 
         self._next_group()
@@ -461,7 +469,7 @@ class DuplicateRemover:
         tk.Label(frame, text="✅  All groups processed",
                  font=("Segoe UI", 22, "bold"), fg=GREEN, bg=BG).pack(pady=(80, 15))
 
-        tk.Label(frame, text="Unselected duplicate images have been moved to:\n"
+        tk.Label(frame, text="Unselected images have been moved to:\n"
                              f"{self.root_folder}\\temp",
                  font=("Segoe UI", 12), fg="#ccc", bg=BG, justify="center").pack(pady=10)
 
