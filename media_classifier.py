@@ -1,48 +1,49 @@
 """
-Media Classifier - Safe & Lightweight Version
-=============================================
-- NO extra software needed (no fpcalc, no chromaprint)
-- Only uses mutagen (optional) + filename
-- Dry Run mode by default (safe)
-- Strict rules so random files are NOT moved
+Media Mover - Grid style sorter (same as Image Sorter)
+=====================================================
+- Grid view of Audio + Video files
+- Ctrl+Click multi-select
+- Drag & Drop to folders
+- No year / auto classification
+- Many formats supported
+- Lightweight (no extra software)
 """
 
 import os
-import re
 import shutil
-from pathlib import Path
 import tkinter as tk
-from tkinter import filedialog, messagebox, scrolledtext, ttk
-
-# Optional - pure Python
-try:
-    from mutagen import File as MutagenFile
-    HAS_MUTAGEN = True
-except ImportError:
-    HAS_MUTAGEN = False
+from tkinter import filedialog, messagebox, simpledialog
+from PIL import Image, ImageTk, ImageDraw, ImageFont, ImageOps
 
 # ================== CONFIG ==================
-AUDIO_EXTS = {".mp3", ".wav", ".flac", ".m4a", ".ogg", ".aac"}
-VIDEO_EXTS = {".mp4", ".mkv", ".avi", ".mov", ".webm", ".wmv"}
+AUDIO_EXTS = {
+    ".mp3", ".wav", ".flac", ".m4a", ".aac", ".ogg", ".wma",
+    ".aiff", ".aif", ".opus", ".amr", ".m4b", ".mp2"
+}
+VIDEO_EXTS = {
+    ".mp4", ".mkv", ".avi", ".mov", ".wmv", ".flv", ".webm",
+    ".m4v", ".3gp", ".3g2", ".mpg", ".mpeg", ".ts", ".m2ts",
+    ".vob", ".ogv", ".mts", ".f4v", ".asf", ".rm", ".rmvb"
+}
+ALL_EXTS = AUDIO_EXTS | VIDEO_EXTS
 
-# Strong Bhakti keywords only (to avoid random matches)
-BHAKTI_KEYWORDS = [
-    "bhajan", "bhakti", "chalisa", "aarti", "arti", "kirtan",
-    "hanuman", "shiv", "shiva", "ram bhajan", "krishna bhajan",
-    "radhe", "radha", "sai baba", "devotional", "bhagwan",
-    "ganesh aarti", "durga aarti", "om namah", "mantra",
-    "ramayan", "mahabharat", "geeta", "gita"
-]
+GRID_COLS = 4
+GRID_ROWS = 4
+PAGE_SIZE = GRID_COLS * GRID_ROWS  # 16
 
-BG = "#0a0a0e"
-PANEL = "#12121a"
+BG_COLOR = "#0a0a0e"
+PANEL_BG = "#12121a"
 ACCENT = "#00d4ff"
-GREEN = "#2ed573"
-ORANGE = "#ffa502"
-RED = "#ff4757"
+SELECT_COLOR = "#1e90ff"
+CARD_BG = "#1a1a24"
+CARD_BG_SEL = "#1e3a5f"
+
+NUMBER_COLORS = ["#ff4757", "#2ed573", "#1e90ff", "#ffa502", "#a55eea",
+                 "#ff6b81", "#7bed9f", "#70a1ff", "#eccc68", "#5352ed",
+                 "#ff6348", "#2f3542", "#ff9ff3", "#54a0ff", "#5f27cd", "#00d2d3"]
 
 
-class MediaClassifierApp:
+class MediaMover:
     def __init__(self, parent=None):
         if parent is None:
             self.root = tk.Tk()
@@ -51,121 +52,84 @@ class MediaClassifierApp:
             self.root = parent
             self.own_root = False
 
-        self.root.title("Media Classifier - Safe Mode")
-        self.root.configure(bg=BG)
-        self.root.geometry("920x700")
-        self.root.minsize(700, 520)
+        self.root.title("Media Mover - Audio & Video")
+        self.root.configure(bg=BG_COLOR)
+        self.root.geometry("1200x750")
+        self.root.minsize(950, 600)
 
-        self.source_path = None
-        self.dest_path = None
+        self.current_folder = None
+        self.media_paths = []
+        self.page = 0
+        self.photo_refs = []
+        self.selected = set()
+        self.folders = []
+        self.status_var = tk.StringVar(value="Select a Drive first")
+        self.cell_labels = {}
 
-        self._build_ui()
+        self._build_start_ui()
         if self.own_root:
             self.root.mainloop()
 
-    def _build_ui(self):
+    # ---------- START SCREEN ----------
+    def _build_start_ui(self):
         for w in self.root.winfo_children():
             w.destroy()
 
-        # Header
-        header = tk.Frame(self.root, bg=PANEL, height=58)
-        header.pack(fill="x")
-        header.pack_propagate(False)
+        frame = tk.Frame(self.root, bg=BG_COLOR)
+        frame.pack(expand=True, fill="both", padx=40, pady=40)
 
-        tk.Label(header, text="🎵  Media Classifier  (Safe Mode)",
-                 font=("Segoe UI", 17, "bold"), fg="white", bg=PANEL).pack(side="left", padx=18, pady=12)
+        title = tk.Label(frame, text="🎵 Media Mover",
+                         font=("Segoe UI", 28, "bold"), fg="#ffffff", bg=BG_COLOR)
+        title.pack(pady=(20, 8))
+
+        sub = tk.Label(frame, text="Audio + Video • Grid view • Ctrl+Click • Drag to folders",
+                       font=("Segoe UI", 13), fg="#888888", bg=BG_COLOR)
+        sub.pack(pady=(0, 25))
+
+        # Formats info
+        fmt = tk.Label(frame,
+                       text="Supports: mp4 mkv avi mov 3gp webm flv  |  mp3 wav flac m4a aac ogg + more",
+                       font=("Segoe UI", 10), fg="#555", bg=BG_COLOR)
+        fmt.pack(pady=(0, 20))
+
+        drive_frame = tk.Frame(frame, bg=BG_COLOR)
+        drive_frame.pack(pady=8)
+
+        tk.Label(drive_frame, text="1. Select Drive:", font=("Segoe UI", 12),
+                 fg="#cccccc", bg=BG_COLOR).pack(side="left", padx=(0, 12))
+
+        self.drive_var = tk.StringVar()
+        drives = self._get_drives()
+        if drives:
+            self.drive_var.set(drives[0])
+        drive_menu = tk.OptionMenu(drive_frame, self.drive_var, *drives)
+        drive_menu.config(font=("Segoe UI", 11), bg="#1a1a24", fg="white",
+                          activebackground=ACCENT, highlightthickness=0)
+        drive_menu["menu"].config(bg="#1a1a24", fg="white")
+        drive_menu.pack(side="left")
+
+        btn = tk.Button(frame, text="2. Select Folder & Start",
+                        font=("Segoe UI", 14, "bold"),
+                        bg=ACCENT, fg="#000000", activebackground="#00b8e0",
+                        relief="flat", padx=32, pady=12,
+                        command=self._select_folder)
+        btn.pack(pady=30)
 
         if not self.own_root:
-            tk.Button(header, text="← Menu", font=("Segoe UI", 10),
-                      bg="#333", fg="white", relief="flat", padx=12,
-                      command=self._go_back).pack(side="right", padx=14, pady=12)
+            back_btn = tk.Button(frame, text="← Back to Menu",
+                                 font=("Segoe UI", 11),
+                                 bg="#333", fg="white", relief="flat", padx=16, pady=6,
+                                 command=self._go_back)
+            back_btn.pack(pady=8)
 
-        main = tk.Frame(self.root, bg=BG)
-        main.pack(expand=True, fill="both", padx=22, pady=10)
+        status = tk.Label(frame, textvariable=self.status_var,
+                          font=("Segoe UI", 10), fg="#666666", bg=BG_COLOR)
+        status.pack(side="bottom", pady=12)
 
-        # Info
-        tk.Label(main,
-                 text="No extra software needed. Uses only filename + optional mutagen tags.\n"
-                      "Dry Run ON = sirf dikhayega kya hoga (safe). Dry Run OFF = actually move karega.",
-                 font=("Segoe UI", 10), fg="#aaaaaa", bg=BG, justify="left").pack(anchor="w", pady=(0, 10))
-
-        # Source
-        src_frame = tk.Frame(main, bg=BG)
-        src_frame.pack(fill="x", pady=4)
-        tk.Label(src_frame, text="Source Folder:", font=("Segoe UI", 11, "bold"),
-                 fg="#ccc", bg=BG, width=13, anchor="w").pack(side="left")
-        self.src_var = tk.StringVar(value="Not selected")
-        tk.Label(src_frame, textvariable=self.src_var, font=("Segoe UI", 10),
-                 fg=ACCENT, bg=BG, anchor="w").pack(side="left", fill="x", expand=True)
-        tk.Button(src_frame, text="Browse", font=("Segoe UI", 10),
-                  bg=ACCENT, fg="black", relief="flat", padx=12,
-                  command=self._select_source).pack(side="right")
-
-        # Dest
-        dst_frame = tk.Frame(main, bg=BG)
-        dst_frame.pack(fill="x", pady=4)
-        tk.Label(dst_frame, text="Destination:", font=("Segoe UI", 11, "bold"),
-                 fg="#ccc", bg=BG, width=13, anchor="w").pack(side="left")
-        self.dst_var = tk.StringVar(value="Same as Source")
-        tk.Label(dst_frame, textvariable=self.dst_var, font=("Segoe UI", 10),
-                 fg="#888", bg=BG, anchor="w").pack(side="left", fill="x", expand=True)
-        tk.Button(dst_frame, text="Browse", font=("Segoe UI", 10),
-                  bg="#444", fg="white", relief="flat", padx=12,
-                  command=self._select_dest).pack(side="right")
-
-        # Options
-        opt = tk.Frame(main, bg=BG)
-        opt.pack(fill="x", pady=10)
-
-        self.dry_run = tk.BooleanVar(value=True)   # DEFAULT SAFE
-        tk.Checkbutton(opt, text="Dry Run (recommended) - sirf dikhayega, move nahi karega",
-                       variable=self.dry_run, font=("Segoe UI", 10, "bold"),
-                       fg=ORANGE, bg=BG, selectcolor="#222",
-                       activebackground=BG, activeforeground=ORANGE).pack(anchor="w")
-
-        self.only_bhakti = tk.BooleanVar(value=False)
-        tk.Checkbutton(opt, text="Only sort bas Bhakti files (baaki chhod do)",
-                       variable=self.only_bhakti, font=("Segoe UI", 10),
-                       fg="#ccc", bg=BG, selectcolor="#222",
-                       activebackground=BG, activeforeground="white").pack(anchor="w", pady=2)
-
-        self.rename_files = tk.BooleanVar(value=False)
-        tk.Checkbutton(opt, text="Rename files if good Title found in tags",
-                       variable=self.rename_files, font=("Segoe UI", 10),
-                       fg="#ccc", bg=BG, selectcolor="#222",
-                       activebackground=BG, activeforeground="white").pack(anchor="w")
-
-        # Lib status
-        status = "mutagen ✅" if HAS_MUTAGEN else "mutagen ❌ (pip install mutagen)"
-        tk.Label(opt, text=f"Library: {status}", font=("Segoe UI", 9),
-                 fg="#666", bg=BG).pack(anchor="w", pady=4)
-
-        # Buttons
-        btn_frame = tk.Frame(main, bg=BG)
-        btn_frame.pack(pady=8)
-
-        self.run_btn = tk.Button(btn_frame, text="▶  START (Dry Run)",
-                                 font=("Segoe UI", 12, "bold"),
-                                 bg=GREEN, fg="black", relief="flat",
-                                 padx=28, pady=9, command=self._run)
-        self.run_btn.pack(side="left", padx=6)
-
-        # Progress
-        self.progress = ttk.Progressbar(main, mode="determinate", length=720)
-        self.progress.pack(pady=4)
-
-        # Log
-        tk.Label(main, text="Log:", font=("Segoe UI", 10, "bold"), fg="#ccc", bg=BG).pack(anchor="w")
-        self.log_text = scrolledtext.ScrolledText(main, height=14, font=("Consolas", 9),
-                                                  bg="#111118", fg="#dddddd",
-                                                  insertbackground="white", relief="flat")
-        self.log_text.pack(fill="both", expand=True, pady=4)
-
-        self._log("Ready.")
-        self._log("• Dry Run ON = safe (sirf dikhayega)")
-        self._log("• Dry Run OFF = actually folders bana ke files move karega")
-        if not HAS_MUTAGEN:
-            self._log("⚠ Better results ke liye:  pip install mutagen")
+        info = tk.Label(frame,
+                        text="Ctrl+Click = multi select   |   Drag → Folder   |   N = Refill   |   Esc = Exit",
+                        font=("Segoe UI", 10), fg="#555555", bg=BG_COLOR)
+        info.pack(side="bottom")
 
     def _go_back(self):
         for w in self.root.winfo_children():
@@ -173,236 +137,405 @@ class MediaClassifierApp:
         from main import show_main_menu
         show_main_menu(self.root)
 
-    def _select_source(self):
-        path = filedialog.askdirectory(title="Select Source Folder")
-        if path:
-            self.source_path = path
-            self.src_var.set(path)
-            if not self.dest_path:
-                self.dst_var.set(path + "  (subfolders yahin banenge)")
+    def _get_drives(self):
+        drives = []
+        for letter in "ABCDEFGHIJKLMNOPQRSTUVWXYZ":
+            path = f"{letter}:\\"
+            if os.path.exists(path):
+                drives.append(path)
+        return drives or ["C:\\"]
 
-    def _select_dest(self):
-        path = filedialog.askdirectory(title="Select Destination Folder")
-        if path:
-            self.dest_path = path
-            self.dst_var.set(path)
-
-    def _log(self, msg):
-        self.log_text.insert(tk.END, msg + "\n")
-        self.log_text.see(tk.END)
-        self.root.update_idletasks()
-
-    def _run(self):
-        if not self.source_path:
-            messagebox.showwarning("Missing", "Pehle Source folder select karo.")
+    def _select_folder(self):
+        start = self.drive_var.get()
+        folder = filedialog.askdirectory(initialdir=start, title="Select Media Folder")
+        if not folder:
             return
+        self.current_folder = folder
+        self._load_media()
+        if not self.media_paths:
+            messagebox.showinfo("No Media", "Is folder me koi supported audio/video nahi mili.")
+            return
+        self._enter_fullscreen()
 
-        dest_root = self.dest_path or self.source_path
-        is_dry = self.dry_run.get()
-
-        self.run_btn.config(state="disabled", text="Working...")
-        self.progress["value"] = 0
-
-        self._log("\n" + "="*55)
-        self._log(f"Mode     : {'DRY RUN (safe)' if is_dry else 'REAL MOVE'}")
-        self._log(f"Source   : {self.source_path}")
-        self._log(f"Dest     : {dest_root}")
-        self._log("="*55)
-
-        try:
-            self._process(self.source_path, dest_root, is_dry)
-        except Exception as e:
-            self._log(f"❌ Error: {e}")
-            messagebox.showerror("Error", str(e))
-        finally:
-            self.run_btn.config(state="normal",
-                                text="▶  START (Dry Run)" if self.dry_run.get() else "▶  START REAL MOVE")
-
-    def _process(self, source, dest_root, is_dry):
-        source = Path(source)
-        dest_root = Path(dest_root)
-
-        folders = {
-            "audio_bhakti": dest_root / "Audio" / "Bhakti",
-            "audio_new":    dest_root / "Audio" / "New_Song_2000_2026",
-            "audio_old":    dest_root / "Audio" / "Old_Song_Till_1999",
-            "video_bhakti": dest_root / "Video" / "Bhakti",
-            "video_new":    dest_root / "Video" / "New_Song_2000_2026",
-            "video_old":    dest_root / "Video" / "Old_Song_Till_1999",
-            "unsorted":     dest_root / "Unsorted",
-        }
-
-        if not is_dry:
-            for p in folders.values():
-                p.mkdir(parents=True, exist_ok=True)
-
-        # Collect files
+    def _load_media(self):
         files = []
-        for f in source.rglob("*"):
-            if f.is_file() and f.suffix.lower() in (AUDIO_EXTS | VIDEO_EXTS):
-                # skip already inside target folders
-                if any(str(f).startswith(str(p)) for p in folders.values()):
-                    continue
-                files.append(f)
+        for f in os.listdir(self.current_folder):
+            full = os.path.join(self.current_folder, f)
+            if os.path.isfile(full) and os.path.splitext(f)[1].lower() in ALL_EXTS:
+                files.append(full)
+        files.sort(key=lambda x: os.path.basename(x).lower())
+        self.media_paths = files
+        self.page = 0
+        self.selected.clear()
 
-        total = len(files)
-        if total == 0:
-            self._log("Koi audio/video file nahi mili.")
+    def _load_folders(self):
+        self.folders = []
+        try:
+            for name in sorted(os.listdir(self.current_folder), key=str.lower):
+                full = os.path.join(self.current_folder, name)
+                if os.path.isdir(full):
+                    self.folders.append(name)
+        except Exception:
+            pass
+
+    # ---------- FULLSCREEN ----------
+    def _enter_fullscreen(self):
+        for w in self.root.winfo_children():
+            w.destroy()
+
+        self.root.attributes("-fullscreen", True)
+        self.root.configure(bg=BG_COLOR)
+        self.root.bind("<Escape>", lambda e: self._exit_fullscreen())
+        self.root.bind("<Left>", lambda e: self._change_page(-1))
+        self.root.bind("<Right>", lambda e: self._change_page(1))
+        self.root.bind("<n>", lambda e: self._refill_grid())
+        self.root.bind("<N>", lambda e: self._refill_grid())
+
+        # Top bar
+        top = tk.Frame(self.root, bg=PANEL_BG, height=44)
+        top.pack(fill="x")
+        top.pack_propagate(False)
+
+        self.page_label = tk.Label(top, text="", font=("Segoe UI", 12, "bold"),
+                                   fg="#ffffff", bg=PANEL_BG)
+        self.page_label.pack(side="left", padx=16)
+
+        self.status_label = tk.Label(top, text="Ctrl+Click to select  •  Drag to folder",
+                                     font=("Segoe UI", 11), fg=ACCENT, bg=PANEL_BG)
+        self.status_label.pack(side="right", padx=16)
+
+        # Main area
+        main = tk.Frame(self.root, bg=BG_COLOR)
+        main.pack(expand=True, fill="both")
+
+        self.grid_frame = tk.Frame(main, bg=BG_COLOR)
+        self.grid_frame.pack(side="left", expand=True, fill="both")
+
+        # RIGHT panel
+        self.folder_panel = tk.Frame(main, bg=PANEL_BG, width=220)
+        self.folder_panel.pack(side="right", fill="y")
+        self.folder_panel.pack_propagate(False)
+
+        tk.Label(self.folder_panel, text="📁  Folders", font=("Segoe UI", 12, "bold"),
+                 fg="#ffffff", bg=PANEL_BG).pack(pady=(10, 4))
+
+        canvas = tk.Canvas(self.folder_panel, bg=PANEL_BG, highlightthickness=0, bd=0)
+        scrollbar = tk.Scrollbar(self.folder_panel, orient="vertical", command=canvas.yview,
+                                 bg=PANEL_BG, troughcolor=PANEL_BG)
+        self.folder_list_frame = tk.Frame(canvas, bg=PANEL_BG)
+
+        self.folder_list_frame.bind(
+            "<Configure>",
+            lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
+        )
+        canvas.create_window((0, 0), window=self.folder_list_frame, anchor="nw", width=200)
+        canvas.configure(yscrollcommand=scrollbar.set)
+
+        canvas.pack(side="left", fill="both", expand=True, padx=4)
+        scrollbar.pack(side="right", fill="y")
+        self.folder_canvas = canvas
+
+        new_btn = tk.Button(self.folder_panel, text="+ New Folder",
+                            font=("Segoe UI", 10, "bold"),
+                            bg=ACCENT, fg="#000", relief="flat", pady=7,
+                            command=self._create_new_folder)
+        new_btn.pack(side="bottom", fill="x", padx=8, pady=8)
+
+        self._load_folders()
+        self._render_folders()
+        self._render_page()
+
+    def _exit_fullscreen(self):
+        self.root.attributes("-fullscreen", False)
+        for key in ["<Escape>", "<Left>", "<Right>", "<n>", "<N>"]:
+            self.root.unbind(key)
+        self._build_start_ui()
+
+    def _change_page(self, delta):
+        max_page = max(0, (len(self.media_paths) - 1) // PAGE_SIZE)
+        new_page = self.page + delta
+        if 0 <= new_page <= max_page:
+            self.page = new_page
+            self.selected.clear()
+            self._render_page()
+
+    def _refill_grid(self):
+        max_page = max(0, (len(self.media_paths) - 1) // PAGE_SIZE)
+        if self.page > max_page:
+            self.page = max_page
+        self.selected.clear()
+        self._render_page()
+        self.status_label.config(text="✅ Grid refilled", fg="#2ed573")
+
+    # ---------- RENDER GRID ----------
+    def _render_page(self):
+        for w in self.grid_frame.winfo_children():
+            w.destroy()
+        self.photo_refs.clear()
+        self.cell_labels.clear()
+
+        start = self.page * PAGE_SIZE
+        end = min(start + PAGE_SIZE, len(self.media_paths))
+        page_items = self.media_paths[start:end]
+
+        total_pages = max(1, (len(self.media_paths) + PAGE_SIZE - 1) // PAGE_SIZE)
+        self.page_label.config(
+            text=f"Page {self.page + 1}/{total_pages}   •   {len(self.media_paths)} left   •   {len(self.selected)} selected"
+        )
+
+        self.root.update_idletasks()
+        w = self.grid_frame.winfo_width()
+        h = self.grid_frame.winfo_height()
+        if w < 50 or h < 50:
+            w = self.root.winfo_screenwidth() - 220
+            h = self.root.winfo_screenheight() - 50
+
+        cell_w = w // GRID_COLS
+        cell_h = h // GRID_ROWS
+
+        for idx in range(PAGE_SIZE):
+            row = idx // GRID_COLS
+            col = idx % GRID_COLS
+            number = idx + 1
+
+            cell = tk.Frame(self.grid_frame, bg=BG_COLOR, width=cell_w, height=cell_h,
+                            highlightthickness=0, bd=0)
+            cell.grid(row=row, column=col, sticky="nsew", padx=2, pady=2)
+            cell.grid_propagate(False)
+            self.grid_frame.grid_rowconfigure(row, weight=1, minsize=0)
+            self.grid_frame.grid_columnconfigure(col, weight=1, minsize=0)
+
+            if idx < len(page_items):
+                path = page_items[idx]
+                self._place_media(cell, path, number, cell_w, cell_h)
+            else:
+                empty = tk.Label(cell, text="", bg=BG_COLOR)
+                empty.place(relx=0, rely=0, relwidth=1, relheight=1)
+
+    def _place_media(self, cell, path, number, cell_w, cell_h):
+        is_selected = path in self.selected
+        is_video = os.path.splitext(path)[1].lower() in VIDEO_EXTS
+
+        bg = CARD_BG_SEL if is_selected else CARD_BG
+        card = tk.Frame(cell, bg=bg, highlightthickness=3 if is_selected else 1,
+                        highlightbackground=SELECT_COLOR if is_selected else "#2a2a3a")
+        card.place(relx=0.02, rely=0.02, relwidth=0.96, relheight=0.96)
+
+        # Icon
+        icon = "🎬" if is_video else "🎵"
+        icon_lbl = tk.Label(card, text=icon, font=("Segoe UI", 36),
+                            bg=bg, fg="#ffffff")
+        icon_lbl.place(relx=0.5, rely=0.32, anchor="center")
+
+        # Filename (truncated)
+        name = os.path.basename(path)
+        if len(name) > 28:
+            name = name[:25] + "..."
+        name_lbl = tk.Label(card, text=name, font=("Segoe UI", 9),
+                            bg=bg, fg="#dddddd", wraplength=cell_w - 30)
+        name_lbl.place(relx=0.5, rely=0.68, anchor="center")
+
+        # Type badge
+        ext = os.path.splitext(path)[1].upper().replace(".", "")
+        type_lbl = tk.Label(card, text=ext, font=("Segoe UI", 8, "bold"),
+                            bg="#00d4ff" if is_video else "#a55eea", fg="#000",
+                            padx=6, pady=1)
+        type_lbl.place(relx=0.05, rely=0.05)
+
+        # Number badge
+        num_color = NUMBER_COLORS[(number - 1) % len(NUMBER_COLORS)]
+        num_lbl = tk.Label(card, text=str(number), font=("Segoe UI", 9, "bold"),
+                           bg=num_color, fg="white", width=2)
+        num_lbl.place(relx=0.95, rely=0.05, anchor="ne")
+
+        # Bind events to all parts of card
+        for widget in (card, icon_lbl, name_lbl, type_lbl, num_lbl):
+            widget.media_path = path
+            widget.bind("<Button-1>", self._on_click)
+            widget.bind("<Control-Button-1>", self._on_ctrl_click)
+            widget.bind("<B1-Motion>", self._on_drag_motion)
+            widget.bind("<ButtonRelease-1>", self._on_drag_release)
+            widget.bind("<Double-Button-1>", self._on_double_click)
+
+        self.cell_labels[path] = card
+
+    # ---------- SELECTION ----------
+    def _on_click(self, event):
+        path = getattr(event.widget, "media_path", None)
+        if not path:
             return
+        self.selected.clear()
+        self.selected.add(path)
+        self._update_selection_visual()
+        self._update_status()
 
-        self._log(f"Found {total} files\n")
-        self.progress["maximum"] = total
-
-        stats = {k: 0 for k in folders}
-        will_move = 0
-        skipped = 0
-
-        for i, fpath in enumerate(files, 1):
-            self.progress["value"] = i
-            try:
-                category, new_name, reason = self._decide(fpath)
-
-                if category is None:
-                    # Not confident → skip
-                    skipped += 1
-                    self._log(f"[{i}/{total}] SKIP  {fpath.name}")
-                    self._log(f"         reason: {reason}")
-                    continue
-
-                target_dir = folders[category]
-                final_name = new_name if (new_name and self.rename_files.get()) else fpath.name
-                dest_file = target_dir / final_name
-
-                # unique name
-                if not is_dry and dest_file.exists():
-                    stem = Path(final_name).stem
-                    suffix = Path(final_name).suffix
-                    c = 1
-                    while dest_file.exists():
-                        dest_file = target_dir / f"{stem}_{c}{suffix}"
-                        c += 1
-
-                stats[category] += 1
-                will_move += 1
-
-                action = "WOULD MOVE" if is_dry else "MOVED"
-                self._log(f"[{i}/{total}] {action}  {fpath.name}")
-                if new_name and self.rename_files.get() and new_name != fpath.name:
-                    self._log(f"         → rename : {final_name}")
-                self._log(f"         → folder : {category}")
-                self._log(f"         → reason : {reason}")
-
-                if not is_dry:
-                    shutil.move(str(fpath), str(dest_file))
-
-            except Exception as e:
-                self._log(f"[{i}/{total}] FAIL {fpath.name}: {e}")
-
-        self._log("\n" + "="*50)
-        if is_dry:
-            self._log(f"DRY RUN complete")
-            self._log(f"Would move : {will_move} files")
-            self._log(f"Skipped    : {skipped} files (not confident)")
-            self._log("\nAgar sahi lag raha hai to Dry Run OFF karke phir se chalao.")
+    def _on_ctrl_click(self, event):
+        path = getattr(event.widget, "media_path", None)
+        if not path:
+            return
+        if path in self.selected:
+            self.selected.discard(path)
         else:
-            self._log(f"REAL MOVE complete")
-            self._log(f"Moved   : {will_move} files")
-            self._log(f"Skipped : {skipped} files")
+            self.selected.add(path)
+        self._update_selection_visual()
+        self._update_status()
 
-        for k, v in stats.items():
-            if v:
-                self._log(f"   {k}: {v}")
-        self._log("="*50)
-
-        if is_dry:
-            messagebox.showinfo("Dry Run Done",
-                                f"Would move {will_move} files\nSkipped {skipped} files\n\n"
-                                "Check log. Agar theek hai to Dry Run OFF karke dubara chalao.")
-        else:
-            messagebox.showinfo("Done", f"Moved {will_move} files\nSkipped {skipped} files")
-
-    def _decide(self, fpath: Path):
-        """
-        Returns (category or None, new_name or None, reason)
-        category = None means SKIP (not confident)
-        """
-        is_audio = fpath.suffix.lower() in AUDIO_EXTS
-        prefix = "audio_" if is_audio else "video_"
-        name_lower = fpath.stem.lower()
-
-        title = ""
-        artist = ""
-        year = None
-
-        # ---- 1. Local tags (mutagen) ----
-        if HAS_MUTAGEN:
+    def _on_double_click(self, event):
+        """Open file with default player"""
+        path = getattr(event.widget, "media_path", None)
+        if path and os.path.exists(path):
             try:
-                meta = MutagenFile(fpath, easy=True)
-                if meta:
-                    if "title" in meta and meta["title"]:
-                        title = str(meta["title"][0]).strip()
-                    if "artist" in meta and meta["artist"]:
-                        artist = str(meta["artist"][0]).strip()
-                    if "date" in meta and meta["date"]:
-                        year = self._extract_year(str(meta["date"][0]))
-                    elif "year" in meta and meta["year"]:
-                        year = self._extract_year(str(meta["year"][0]))
+                os.startfile(path)   # Windows
             except Exception:
                 pass
 
-        search_text = f"{name_lower} {title} {artist}".lower()
+    def _update_selection_visual(self):
+        self._render_page()
 
-        # ---- 2. Strong Bhakti check ----
-        is_bhakti = any(kw in search_text for kw in BHAKTI_KEYWORDS)
+    def _update_status(self):
+        count = len(self.selected)
+        if count == 0:
+            self.status_label.config(text="Ctrl+Click to select  •  Drag to folder", fg=ACCENT)
+        else:
+            self.status_label.config(
+                text=f"{count} selected  •  Drag any selected item to a folder",
+                fg="#ffaa00")
+        total_pages = max(1, (len(self.media_paths) + PAGE_SIZE - 1) // PAGE_SIZE)
+        self.page_label.config(
+            text=f"Page {self.page + 1}/{total_pages}   •   {len(self.media_paths)} left   •   {count} selected"
+        )
 
-        if is_bhakti:
-            new_name = self._make_name(artist, title, fpath.suffix) if title else None
-            return prefix + "bhakti", new_name, "Bhakti keyword found"
+    # ---------- DRAG & DROP ----------
+    def _on_drag_motion(self, event):
+        if self.selected:
+            event.widget.config(cursor="fleur")
 
-        # If user selected "Only Bhakti" → stop here
-        if self.only_bhakti.get():
-            return None, None, "Only Bhakti mode - no keyword"
+    def _on_drag_release(self, event):
+        widget = event.widget
+        path = getattr(widget, "media_path", None)
+        if not path:
+            return
 
-        # ---- 3. Year based (only if clear year found) ----
-        if year is None:
-            year = self._extract_year(name_lower)
-            if year is None and title:
-                year = self._extract_year(title)
+        if path not in self.selected:
+            self.selected.clear()
+            self.selected.add(path)
 
-        if year is not None:
-            new_name = self._make_name(artist, title, fpath.suffix) if title else None
-            if year <= 1999:
-                return prefix + "old", new_name, f"Year {year} (Old)"
-            elif 2000 <= year <= 2026:
-                return prefix + "new", new_name, f"Year {year} (New)"
+        x = self.root.winfo_pointerx() - self.root.winfo_rootx()
+        y = self.root.winfo_pointery() - self.root.winfo_rooty()
 
-        # ---- 4. Not confident → SKIP ----
-        return None, None, "No clear Bhakti keyword or Year found"
+        fx = self.folder_panel.winfo_rootx() - self.root.winfo_rootx()
+        fy = self.folder_panel.winfo_rooty() - self.root.winfo_rooty()
+        fw = self.folder_panel.winfo_width()
+        fh = self.folder_panel.winfo_height()
 
-    def _make_name(self, artist, title, ext):
-        def clean(s):
-            if not s:
-                return ""
-            s = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "", s)
-            s = re.sub(r"\s+", " ", s).strip()
-            return s[:70]
+        if fx <= x <= fx + fw and fy <= y <= fy + fh:
+            target_folder = self._find_folder_under_pointer()
+            if target_folder:
+                self._move_selected_to(target_folder)
+            else:
+                self.status_label.config(text="Drop on a folder name", fg="#ff4757")
 
-        title = clean(title)
-        artist = clean(artist)
-        if not title:
-            return None
-        if artist:
-            return f"{artist} - {title}{ext}"
-        return f"{title}{ext}"
+        try:
+            widget.config(cursor="hand2")
+        except Exception:
+            pass
 
-    def _extract_year(self, text):
-        if not text:
-            return None
-        matches = re.findall(r"\b(19[5-9][0-9]|20[0-2][0-6])\b", str(text))
-        if matches:
-            return int(matches[0])
+    def _find_folder_under_pointer(self):
+        px = self.root.winfo_pointerx()
+        py = self.root.winfo_pointery()
+        for child in self.folder_list_frame.winfo_children():
+            try:
+                for sub in child.winfo_children():
+                    if hasattr(sub, "folder_name"):
+                        sx = sub.winfo_rootx()
+                        sy = sub.winfo_rooty()
+                        sw = sub.winfo_width()
+                        sh = sub.winfo_height()
+                        if sx <= px <= sx + sw and sy <= py <= sy + sh:
+                            return sub.folder_name
+            except Exception:
+                continue
         return None
+
+    def _move_selected_to(self, folder_name):
+        if not self.selected:
+            return
+
+        dest_dir = os.path.join(self.current_folder, folder_name)
+        moved = 0
+        to_remove = []
+
+        for src in list(self.selected):
+            if not os.path.exists(src):
+                continue
+            dest = os.path.join(dest_dir, os.path.basename(src))
+            try:
+                shutil.move(src, dest)
+                to_remove.append(src)
+                moved += 1
+            except Exception as e:
+                print("Move error:", e)
+
+        for p in to_remove:
+            if p in self.media_paths:
+                self.media_paths.remove(p)
+            self.selected.discard(p)
+
+        self._load_folders()
+        self._render_folders()
+        self._render_page()
+
+        if moved:
+            self.status_label.config(
+                text=f"✅ Moved {moved} files → {folder_name}", fg="#2ed573")
+        else:
+            self.status_label.config(text="Nothing moved", fg="#ff4757")
+
+    # ---------- FOLDERS ----------
+    def _render_folders(self):
+        for w in self.folder_list_frame.winfo_children():
+            w.destroy()
+
+        if not self.folders:
+            tk.Label(self.folder_list_frame, text="No folders\nCreate one ↓",
+                     font=("Segoe UI", 10), fg="#666", bg=PANEL_BG,
+                     justify="center").pack(pady=25)
+            return
+
+        for name in self.folders:
+            f = tk.Frame(self.folder_list_frame, bg="#1a1a24", pady=2)
+            f.pack(fill="x", pady=2, padx=2)
+
+            lbl = tk.Label(f, text=f"📂  {name}", font=("Segoe UI", 11),
+                           fg="#eeeeee", bg="#1a1a24", anchor="w", cursor="hand2",
+                           padx=8, pady=8)
+            lbl.pack(fill="x")
+            lbl.folder_name = name
+
+            lbl.bind("<Enter>", lambda e, l=lbl: l.config(bg="#2a2a3a"))
+            lbl.bind("<Leave>", lambda e, l=lbl: l.config(bg="#1a1a24"))
+            lbl.bind("<Button-1>", lambda e, n=name: self._on_folder_click(n))
+
+    def _on_folder_click(self, folder_name):
+        if self.selected:
+            self._move_selected_to(folder_name)
+
+    def _create_new_folder(self):
+        name = simpledialog.askstring("New Folder", "Enter folder name:", parent=self.root)
+        if not name:
+            return
+        name = name.strip()
+        if not name:
+            return
+        path = os.path.join(self.current_folder, name)
+        try:
+            os.makedirs(path, exist_ok=True)
+            self._load_folders()
+            self._render_folders()
+            self.status_label.config(text=f"Folder created: {name}", fg="#2ed573")
+        except Exception as e:
+            self.status_label.config(text=f"Error: {e}", fg="#ff4757")
 
 
 if __name__ == "__main__":
-    MediaClassifierApp()
+    MediaMover()
