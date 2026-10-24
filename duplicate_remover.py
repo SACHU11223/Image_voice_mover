@@ -3,7 +3,7 @@ Image Duplicate Remover
 =======================
 - Scan folder + all subfolders
 - Find truly similar images (~50%+ match, strict)
-- Show each similar group in a grid
+- Show ALL matching images of a group in scrollable grid
 - Select images to PRESERVE
 - Unselected ones move to temp/ folder in root
 """
@@ -27,14 +27,11 @@ IMAGE_EXTS = {
     ".heic", ".heif", ".ico", ".jfif", ".raw", ".cr2", ".nef", ".arw"
 }
 
-# STRICT threshold for real similarity (~50%+ visual match)
-# Lower number = stricter (only very similar images group)
-# 0 = identical, 5-8 = very similar, 10 = similar, 15+ = often different
+# STRICT threshold (~50%+ visual match)
 HASH_THRESHOLD = 8
 
-GRID_COLS = 5
-GRID_ROWS = 3
-PAGE_SIZE = GRID_COLS * GRID_ROWS
+GRID_COLS = 4          # columns in grid
+THUMB_SIZE = 160       # each image size in grid
 
 BG = "#0a0a0e"
 PANEL = "#12121a"
@@ -84,7 +81,7 @@ class DuplicateRemover:
         tk.Label(frame, text="🖼️  Image Duplicate Remover",
                  font=("Segoe UI", 26, "bold"), fg="white", bg=BG).pack(pady=(10, 6))
 
-        tk.Label(frame, text="Scan folder + subfolders → Group truly similar images → Keep selected → Move rest to temp",
+        tk.Label(frame, text="Scan folder + subfolders → Group similar images → Keep selected → Move rest to temp",
                  font=("Segoe UI", 11), fg="#888", bg=BG).pack(pady=(0, 20))
 
         if not HAS_IMAGEHASH:
@@ -106,7 +103,7 @@ class DuplicateRemover:
 
         info = ("How it works:\n"
                 "1. Select root folder (all subfolders scanned)\n"
-                "2. Only truly similar images (~50%+ match) shown in groups\n"
+                "2. Similar images shown together (ALL images of group)\n"
                 "3. Ctrl+Click select images you want to KEEP\n"
                 "4. Click PRESERVE → unselected move to temp/ folder")
         tk.Label(frame, text=info, font=("Segoe UI", 10), fg="#555", bg=BG,
@@ -149,7 +146,6 @@ class DuplicateRemover:
         self._show_group_ui()
 
     def _scan_and_group(self, root):
-        """Strict grouping - only images that really look similar"""
         root = Path(root)
         all_images = []
 
@@ -163,7 +159,6 @@ class DuplicateRemover:
         self.status_var.set(f"Found {total} images. Computing hashes...")
         self.root.update()
 
-        # Use two hashes for better accuracy
         phashes = {}
         ahashes = {}
 
@@ -171,7 +166,6 @@ class DuplicateRemover:
             try:
                 with Image.open(path) as im:
                     im = im.convert("RGB")
-                    # Resize large images for speed
                     if max(im.size) > 1000:
                         im.thumbnail((1000, 1000))
                     phashes[str(path)] = imagehash.phash(im)
@@ -188,7 +182,6 @@ class DuplicateRemover:
             self.groups = []
             return
 
-        # Union-Find
         parent = {p: p for p in paths}
 
         def find(x):
@@ -202,21 +195,17 @@ class DuplicateRemover:
             if ra != rb:
                 parent[rb] = ra
 
-        self.status_var.set("Grouping similar images (strict)...")
+        self.status_var.set("Grouping similar images...")
         self.root.update()
 
         for i in range(n):
             for j in range(i + 1, n):
                 p1, p2 = paths[i], paths[j]
-
-                # Both hashes must be close (stricter = fewer false matches)
                 p_dist = phashes[p1] - phashes[p2]
                 a_dist = ahashes[p1] - ahashes[p2]
-
                 if p_dist <= HASH_THRESHOLD and a_dist <= HASH_THRESHOLD + 2:
                     union(p1, p2)
 
-        # Build groups
         clusters = {}
         for p in paths:
             root_p = find(p)
@@ -238,6 +227,7 @@ class DuplicateRemover:
         group = self.groups[self.current_group_idx]
         self.selected = set()
 
+        # Top bar
         top = tk.Frame(self.root, bg=PANEL, height=50)
         top.pack(fill="x")
         top.pack_propagate(False)
@@ -251,12 +241,36 @@ class DuplicateRemover:
                                      font=("Segoe UI", 11), fg=ACCENT, bg=PANEL)
         self.status_label.pack(side="right", padx=16)
 
+        # Main
         main = tk.Frame(self.root, bg=BG)
         main.pack(expand=True, fill="both")
 
-        self.grid_frame = tk.Frame(main, bg=BG)
-        self.grid_frame.pack(side="left", expand=True, fill="both", padx=8, pady=8)
+        # LEFT: scrollable grid (shows ALL images of group)
+        left = tk.Frame(main, bg=BG)
+        left.pack(side="left", expand=True, fill="both", padx=6, pady=6)
 
+        canvas = tk.Canvas(left, bg=BG, highlightthickness=0)
+        scrollbar = tk.Scrollbar(left, orient="vertical", command=canvas.yview)
+        self.grid_inner = tk.Frame(canvas, bg=BG)
+
+        self.grid_inner.bind(
+            "<Configure>",
+            lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
+        )
+        canvas.create_window((0, 0), window=self.grid_inner, anchor="nw")
+        canvas.configure(yscrollcommand=scrollbar.set)
+
+        canvas.pack(side="left", fill="both", expand=True)
+        scrollbar.pack(side="right", fill="y")
+
+        self.canvas = canvas
+
+        # Mouse wheel scroll
+        def _on_mousewheel(event):
+            canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+        canvas.bind_all("<MouseWheel>", _on_mousewheel)
+
+        # RIGHT panel
         right = tk.Frame(main, bg=PANEL, width=210)
         right.pack(side="right", fill="y")
         right.pack_propagate(False)
@@ -297,38 +311,25 @@ class DuplicateRemover:
         self._render_group(group)
 
     def _render_group(self, group):
-        for w in self.grid_frame.winfo_children():
+        """Show ALL images in the group (scrollable)"""
+        for w in self.grid_inner.winfo_children():
             w.destroy()
         self.photo_refs.clear()
 
-        self.root.update_idletasks()
-        w = self.grid_frame.winfo_width() or 750
-        h = self.grid_frame.winfo_height() or 520
+        # Show every image in the group
+        for idx, path in enumerate(group):
+            row = idx // GRID_COLS
+            col = idx % GRID_COLS
 
-        show_list = group[:PAGE_SIZE]
-        cols = min(GRID_COLS, max(1, len(show_list)))
-        rows = (len(show_list) + cols - 1) // cols
-
-        cell_w = max(110, w // cols - 6)
-        cell_h = max(110, h // max(rows, 1) - 6)
-
-        for idx, path in enumerate(show_list):
-            row = idx // cols
-            col = idx % cols
-
-            cell = tk.Frame(self.grid_frame, bg=BG, width=cell_w, height=cell_h)
-            cell.grid(row=row, column=col, padx=3, pady=3, sticky="nsew")
+            cell = tk.Frame(self.grid_inner, bg=BG, width=THUMB_SIZE, height=THUMB_SIZE)
+            cell.grid(row=row, column=col, padx=4, pady=4)
             cell.grid_propagate(False)
-            self.grid_frame.grid_rowconfigure(row, weight=1)
-            self.grid_frame.grid_columnconfigure(col, weight=1)
 
-            self._place_image(cell, path, idx + 1, cell_w, cell_h)
+            self._place_image(cell, path, idx + 1, THUMB_SIZE, THUMB_SIZE)
 
-        if len(group) > PAGE_SIZE:
-            note = tk.Label(self.grid_frame,
-                            text=f"Showing first {PAGE_SIZE} of {len(group)} similar images",
-                            font=("Segoe UI", 9), fg="#666", bg=BG)
-            note.grid(row=rows, column=0, columnspan=cols, pady=6)
+        # Force scrollregion update
+        self.grid_inner.update_idletasks()
+        self.canvas.configure(scrollregion=self.canvas.bbox("all"))
 
     def _place_image(self, cell, path, number, cell_w, cell_h):
         try:
@@ -339,17 +340,17 @@ class DuplicateRemover:
 
             if is_sel:
                 draw = ImageDraw.Draw(img)
-                draw.rectangle([0, 0, img.width-1, img.height-1], outline=SELECT_COLOR, width=6)
+                draw.rectangle([0, 0, img.width-1, img.height-1], outline=SELECT_COLOR, width=5)
                 overlay = Image.new("RGB", img.size, SELECT_COLOR)
                 img = Image.blend(img, overlay, 0.12)
 
-            badge_size = 26
+            badge_size = 24
             badge = Image.new("RGBA", (badge_size, badge_size), (0, 0, 0, 0))
             d = ImageDraw.Draw(badge)
             color = NUMBER_COLORS[(number - 1) % len(NUMBER_COLORS)]
             d.ellipse([0, 0, badge_size-1, badge_size-1], fill=color)
             try:
-                font = ImageFont.truetype("arial.ttf", 12)
+                font = ImageFont.truetype("arial.ttf", 11)
             except Exception:
                 font = ImageFont.load_default()
             text = str(number)
